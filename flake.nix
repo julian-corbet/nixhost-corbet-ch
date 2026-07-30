@@ -54,7 +54,7 @@
       # roughly 2.6 hours against ~0.05 s for the same assertion over plain data.
       #
       # The VALUES it checks are not here and never will be -- this repo is public. The tree is
-      # assembled privately and passed in, exactly as `nixid`'s uid/gid table is filled by whoever
+      # assembled privately and passed in, exactly as `nixiam`'s uid/gid table is filled by whoever
       # imports it.
       # ---------------------------------------------------------------
       lib = {

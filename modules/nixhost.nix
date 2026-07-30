@@ -14,7 +14,7 @@
 # unchanged, as `nixosModules`, `systemManagerModules`, AND `darwinModules` (see flake.nix and
 # this file's own "THREE BACKENDS, ONE FILE" note below) -- a Mac under nix-darwin has just as
 # much of a CPU, a RAM total, and a set of environments standing on it as a NixOS server does,
-# and none of that is a NixOS-specific concept. The precedent this follows exactly is nixid's
+# and none of that is a NixOS-specific concept. The precedent this follows exactly is nixiam's
 # `modules/posix.nix`: no `pkgs`, nothing that runs, so importing it costs a host nothing beyond
 # the fact table itself.
 #

@@ -201,7 +201,7 @@ and `config.assertions` — primitives every module system built on `lib.evalMod
 and never `pkgs`, `systemd`, or any NixOS-only integration. A Mac under nix-darwin has just as
 real a CPU arch, RAM total, and set of environments standing on it as a bare-metal NixOS server
 does, and none of that is a NixOS-specific concept — the same reasoning
-[nixid](https://github.com/julian-corbet/nixid-corbet-ch)'s own `modules/posix.nix` already
+[nixiam](https://github.com/julian-corbet/nixiam-corbet-ch)'s own `modules/posix.nix` already
 established for a cross-host identity table. See `checks/default.nix`'s backend-parity tests for
 the CI proof covering NixOS and system-manager; the `nix-darwin` alias itself is offered on the
 strength of the same reasoning but is not yet backed by a check — see

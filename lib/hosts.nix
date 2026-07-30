@@ -41,7 +41,7 @@
 #
 # It declares no fact, reads no `config`, imports no other repo, and touches no disk, unit or
 # package. It also does not hold VALUES: this repo is public, so the tree is assembled privately
-# and passed in -- the same division `nixid`'s uid/gid table already uses.
+# and passed in -- the same division `nixiam`'s uid/gid table already uses.
 #
 # ── THE TREE IT EXPECTS ─────────────────────────────────────────────────────────────────────
 #
