@@ -54,6 +54,31 @@
 #   becomes a policy engine with an opinion. Enums and quantities go in; nothing computed from
 #   them is allowed to live here.
 #
+# ── THE SUBSTRATE CONTRACT: one declaration, four mechanisms ─────────────────────────────────
+#
+# `environments.<name>` is the seam between this module and the repositories that actually build
+# a second-level entity. Every substrate -- k3s, vm, podman, lxc -- is a different mechanism, and
+# they deliberately share no implementation: a cluster with a control plane, hardware emulation,
+# an OCI runtime and a system container have nothing in common at the code level. What they DO
+# share is the declaration, and it lives here.
+#
+# The division, and the reason it is worth having:
+#
+#   THIS MODULE declares that an environment EXISTS, what KIND it is, and what ENVELOPE it may
+#   claim -- RAM, physical cores, and its access stance on each named GPU. It also owns the only
+#   arithmetic nothing else can do: summing what every environment on a host claims and refusing
+#   to evaluate when the total exceeds what the host actually has.
+#
+#   A SUBSTRATE REPO reads its own slice and builds the thing. It must NOT declare a second
+#   resource envelope of its own. A substrate that grows its own `memoryLimit` beside
+#   `environments.<name>.resources.ram.limitMiB` has created a fact with two owners, and the
+#   oversubscription assertion above then guards a number nobody is using -- which is worse than
+#   no assertion, because it reads as coverage.
+#
+# Read this slice DEFENSIVELY (`config.nixhost.environments or { }`), never as a flake input on
+# this repo: the same one-way rule every other consumer in this family follows, so a substrate
+# stays independently usable by someone who has never imported nixhost.
+#
 # ── ONE HOST HERE; MANY HOSTS IN `lib/hosts.nix` ───────────────────────────────────────────
 #
 # This module is imported once PER HOST, by that host's own configuration, and every assertion
@@ -182,13 +207,19 @@ let
   environmentSubmodule = types.submodule {
     options = {
       kind = mkOption {
-        type = types.enum [ "k3s" "vm" "podman" ];
+        type = types.enum [ "k3s" "vm" "podman" "lxc" ];
         example = "k3s";
         description = ''
           What kind of environment this is. Required, with no default: an environment this
           module cannot classify is one whose resource claims cannot be reasoned about at all
           -- there is no safe generic guess between "a whole VM" and "one podman container"
           that would not misrepresent the claim to whoever reads this table next.
+
+          Each member of this enum has exactly one implementing repository, and this option is
+          the seam between them: `k3s`, `vm`, `podman` and `lxc` are four different mechanisms
+          -- a cluster with a control plane, hardware emulation, an OCI runtime, a system
+          container -- that share a DECLARATION and share almost no code. Adding a member here
+          is how a new substrate becomes a first-class peer of the others.
         '';
       };
 
