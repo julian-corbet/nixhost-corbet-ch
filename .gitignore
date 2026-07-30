@@ -1,0 +1,12 @@
+result
+result-*
+.direnv/
+.envrc.local
+*.swp
+.DS_Store
+.wrangler/
+
+# Raw NIX_SHOW_STATS dumps from studies/eval-cost/bench.sh -- 136 files of machine-
+# generated measurement exhaust. summary.csv holds the derived data every number in that
+# study README cites; bench.sh regenerates the raw dumps on demand.
+studies/eval-cost/results/raw/
