@@ -185,6 +185,70 @@ let
     };
   };
 
+  # ── FLOORS: reserveMiB (memory.low) and hardReserveMiB (memory.min) ─────────────────────────
+
+  # Hard floors that fit under the host total. Must build.
+  hardReservesFit = hostWith [ cpu16c32t ram64g ] {
+    environments = {
+      desktop = { kind = "native"; resources.ram.hardReserveMiB = 8192; };
+      cluster = { kind = "k3s"; resources.ram.hardReserveMiB = 32768; };
+    };
+  };
+
+  # THE POINT: memory.min promised twice. 40960 + 32768 > 65536, and the kernel cannot partially
+  # honour a guarantee -- it OOMs instead. Unlike limitMiB, a null reservation is zero here, so
+  # this sum is complete rather than a lower bound.
+  hardReservesOverCommitted = hostWith [ cpu16c32t ram64g ] {
+    environments = {
+      desktop = { kind = "native"; resources.ram.hardReserveMiB = 40960; };
+      cluster = { kind = "k3s"; resources.ram.hardReserveMiB = 32768; };
+    };
+  };
+
+  # THE DELIBERATE ASYMMETRY: the SAME numbers as soft floors must BUILD. memory.low is a
+  # preference the kernel resolves proportionally and can always walk back, so several tenants
+  # each preferring more than exists between them is legitimate, not a contradiction.
+  softReservesOverSubscribedIsFine = hostWith [ cpu16c32t ram64g ] {
+    environments = {
+      desktop = { kind = "native"; resources.ram.reserveMiB = 40960; };
+      cluster = { kind = "k3s"; resources.ram.reserveMiB = 32768; };
+    };
+  };
+
+  # Nested: a hard floor inside a VM is checked against the VM's own limit, not the host's total.
+  # 12288 reserved inside an 8192 VM, on a host with 64 GiB spare.
+  hardReserveOverParentNotHost = hostWith [ cpu16c32t ram64g ] {
+    environments.vm1 = {
+      kind = "vm";
+      resources.ram.limitMiB = 8192;
+      environments.pod1 = { kind = "podman"; resources.ram.hardReserveMiB = 12288; };
+    };
+  };
+
+  # One environment contradicting ITSELF -- no sibling involved, so neither sum can see these.
+  floorAboveOwnCap = hostWith [ cpu16c32t ram64g ] {
+    environments.app = {
+      kind = "podman";
+      resources.ram = { limitMiB = 4096; hardReserveMiB = 8192; };
+    };
+  };
+
+  softFloorAboveOwnCap = hostWith [ cpu16c32t ram64g ] {
+    environments.app = {
+      kind = "podman";
+      resources.ram = { limitMiB = 4096; reserveMiB = 8192; };
+    };
+  };
+
+  # A hard floor above the soft one makes the soft one dead: memory.min already protects that much
+  # unconditionally, so memory.low never gets a chance to apply.
+  hardFloorAboveSoftFloor = hostWith [ cpu16c32t ram64g ] {
+    environments.app = {
+      kind = "podman";
+      resources.ram = { reserveMiB = 2048; hardReserveMiB = 4096; };
+    };
+  };
+
   # ── `native`: a claimant that is not a substrate ────────────────────────────────────────────
   # The four container/VM/cluster kinds all describe something that CONTAINS workloads, which left
   # processes on the metal (a desktop session, a compositor) with no address at all -- so the one
@@ -499,6 +563,34 @@ let
     (check "module/omitting-class-and-role-builds-fine"
       (!(nixosBuildFails classAndRoleUnset))
       "leaving class and role unset must build: null means `not tracked for this host`, and an assertion firing on every host that does not track them would make the options unadoptable")
+
+    (check "floors/hard-reserves-that-fit-build"
+      (!(nixosBuildFails hardReservesFit))
+      "8192 + 32768 hard-reserved on a 65536MiB host fits and must evaluate")
+
+    (check "floors/hard-reserves-over-capacity-fail"
+      (nixosBuildFails hardReservesOverCommitted)
+      "memory.min promised twice is a guarantee the kernel cannot partially honour -- it resolves it by killing something, so the build must say so first")
+
+    (check "floors/soft-reserves-may-be-over-subscribed"
+      (!(nixosBuildFails softReservesOverSubscribedIsFine))
+      "the IDENTICAL numbers as soft floors must build: memory.low is a preference resolved proportionally under pressure, and several tenants each preferring more than exists is legitimate -- if this ever fails, the two floor kinds have been collapsed into one")
+
+    (check "floors/hard-reserve-is-checked-against-its-PARENT"
+      (nixosBuildFails hardReserveOverParentNotHost)
+      "12288MiB reserved inside an 8192MiB VM must fail even though the host has 64GiB spare -- a guest cannot guarantee more than it was given")
+
+    (check "floors/hard-floor-above-own-cap-fails"
+      (nixosBuildFails floorAboveOwnCap)
+      "an environment cannot be guaranteed memory it is itself capped below; no sibling is involved, so neither sum sees this")
+
+    (check "floors/soft-floor-above-own-cap-fails"
+      (nixosBuildFails softFloorAboveOwnCap)
+      "an environment cannot prefer to keep more than it may use")
+
+    (check "floors/hard-floor-above-soft-floor-fails"
+      (nixosBuildFails hardFloorAboveSoftFloor)
+      "memory.min above memory.low makes the soft floor dead -- the hard one already protects that much unconditionally")
 
     (check "native/beside-a-cluster-builds-fine"
       (!(nixosBuildFails nativeBesideCluster))

@@ -271,6 +271,67 @@ let
               is the opposite of conservative.
             '';
           };
+          # ── FLOORS, not ceilings ──────────────────────────────────────────────────────────
+          #
+          # `limitMiB` above is a CAP: the most this environment may use. These two are the
+          # opposite question -- the least it must keep -- and they are what a host with no caps
+          # anywhere can still state. That case is not hypothetical: on a mixed host where the
+          # cluster and the container are both uncapped, every claim is null, the sum is empty and
+          # the ceiling check has nothing to bite on, yet the interesting question ("does the
+          # desktop keep enough to stay usable while a batch job runs?") is still live.
+          #
+          # Two fields rather than one ordinal, because the kernel makes two different PROMISES and
+          # collapsing them loses the distinction that matters under pressure:
+          #
+          #   reserveMiB      -> memory.low   soft. Reclaimed only after everything unprotected
+          #                                   has been. Best-effort, and deliberately
+          #                                   over-subscribable (see the assertions: these are NOT
+          #                                   summed) -- several tenants may each prefer to keep
+          #                                   8 GiB on a 12 GiB host, and the kernel resolves that
+          #                                   proportionally rather than failing.
+          #   hardReserveMiB  -> memory.min   hard. Never reclaimed. The kernel would sooner OOM
+          #                                   than take it, which is exactly why these ARE summed
+          #                                   strictly: memory promised twice is a promise the
+          #                                   kernel cannot keep, and it discovers that at 3am.
+          #
+          # Bottom-up by construction: each tenant states its own floor in its own file, knowing
+          # nothing about its siblings or the host total, and the check aggregates upward. Nothing
+          # here divides a budget.
+          reserveMiB = mkOption {
+            type = types.nullOr types.ints.positive;
+            default = null;
+            example = 4096;
+            description = ''
+              Soft floor -- the RAM this environment should keep before anything else is
+              reclaimed from it. Renders to `memory.low`. `null` (the default) means no
+              preference, which is not the same as zero: an environment with no floor is simply
+              reclaimed from in the ordinary order rather than last.
+
+              NOT summed against the parent ceiling, deliberately. A soft floor is a preference
+              the kernel honours proportionally under pressure and can always walk back, so
+              several environments preferring to keep more than the host has between them is a
+              legitimate configuration, not a contradiction -- unlike `hardReserveMiB`.
+            '';
+          };
+
+          hardReserveMiB = mkOption {
+            type = types.nullOr types.ints.positive;
+            default = null;
+            example = 2048;
+            description = ''
+              Hard floor -- RAM the kernel must never reclaim from this environment. Renders to
+              `memory.min`. Use sparingly: it is memory taken off the table for every other
+              tenant whether or not this one is using it, and an environment holding a hard
+              floor it does not need starves its neighbours invisibly.
+
+              SUMMED STRICTLY against the parent's ceiling, unlike both `limitMiB` (where null
+              means unlimited and is excluded) and `reserveMiB` (where over-subscription is
+              legitimate). The asymmetry is the kernel's, not this module's: `memory.min` is a
+              promise that cannot be partially kept, so two siblings hard-reserving 64 GiB each
+              on a 96 GiB host have already made a promise one of them will not receive, and the
+              only question left is whether the build says so or the OOM killer does.
+            '';
+          };
         };
 
         cpu = {
@@ -443,6 +504,57 @@ let
   # mirrored ceiling ever appears at another depth, this keeps covering it instead of silently
   # covering only the one case its author had in mind.
   ceilingUnresolved = any (b: b.claimed > 0 && b.ceilingIsMirrored && b.ceiling == null);
+
+  # ── Hard reservations, summed against the same ceilings ─────────────────────────────────────
+  #
+  # Derived from `envContainers` -- the SAME walk the limit budgets use -- rather than from its own
+  # traversal of `cfg.environments`. That is deliberate and is the whole reason this reads as a map
+  # over an existing list instead of a second recursive function: a separately-written walk can
+  # drift out of step at depth, and the failure mode of that drift is silent (a reservation three
+  # levels down that stops being counted). One walk, three questions.
+  #
+  # `ceiling` is the container's RAM LIMIT, not its reservation: what bounds the floors a container
+  # can hand out is how much that container has, and hard-reserving beyond it promises memory that
+  # was never available at that level in the first place.
+  hardReserveBudgets = map
+    (c: {
+      inherit (c) path ceilingIsMirrored;
+      claimed = foldl'
+        (acc: n:
+          let v = c.children.${n}.resources.ram.hardReserveMiB;
+          in if v == null then acc else acc + v)
+        0
+        (attrNames c.children);
+      ceiling = c.ram;
+    })
+    envContainers;
+
+  # Distinct from `overcommitted` because the failure MEANS something different and the operator
+  # needs to be told which one they hit: exceeding a cap is over-allocation that the kernel will
+  # throttle or reclaim its way out of, while over-promising `memory.min` is a guarantee that
+  # cannot be partially honoured -- the kernel resolves it by killing something.
+  hardReserveViolations = concatMap
+    (b: optional (b.claimed > 0 && b.ceiling != null && b.claimed > b.ceiling)
+      "${b.path}: its environments hard-reserve ${toString b.claimed} MiB between them, but ${b.path} has ${toString b.ceiling} MiB")
+    hardReserveBudgets;
+
+  # Per-environment coherence: a floor above your own cap, or a hard floor above your own soft one.
+  # Neither is caught by the sums above (each is a single environment contradicting ITSELF, not its
+  # siblings), and both are the shape a copy-paste between hosts produces.
+  incoherentFloors = concatMap
+    (node:
+      let
+        r = node.env.resources.ram;
+        overCap = r.hardReserveMiB != null && r.limitMiB != null && r.hardReserveMiB > r.limitMiB;
+        softOverCap = r.reserveMiB != null && r.limitMiB != null && r.reserveMiB > r.limitMiB;
+        # A hard floor at or above the soft floor makes the soft one dead: `memory.min` already
+        # protects that much unconditionally, so `memory.low` never gets a chance to mean anything.
+        hardOverSoft = r.hardReserveMiB != null && r.reserveMiB != null && r.hardReserveMiB > r.reserveMiB;
+      in
+      optional overCap "${node.path}: hardReserveMiB ${toString r.hardReserveMiB} exceeds its own limitMiB ${toString r.limitMiB} -- it cannot be guaranteed memory it is capped below"
+      ++ optional softOverCap "${node.path}: reserveMiB ${toString r.reserveMiB} exceeds its own limitMiB ${toString r.limitMiB} -- it cannot prefer to keep more than it may use"
+      ++ optional hardOverSoft "${node.path}: hardReserveMiB ${toString r.hardReserveMiB} exceeds reserveMiB ${toString r.reserveMiB} -- the hard floor already protects that much unconditionally, so the soft floor can never take effect")
+    allEnvNodes;
 
   ramViolations = overcommitted "MiB" ramBudgets;
   cpuViolations = overcommitted "cores" cpuBudgets;
@@ -1095,6 +1207,46 @@ in
           has. Environments with no declared `ram.limitMiB` are excluded from these sums (an
           unlimited claim is not a bounded one to check), so the real oversubscription is at
           least this large. Lower a claim, raise the parent's limit, or add RAM.
+        '';
+      }
+
+      # Hard floors, same walk again. Separate from the cap check above because the two failures
+      # are not the same problem: exceeding a cap over-allocates memory the kernel can reclaim or
+      # throttle its way out of, while over-promising `memory.min` is a guarantee it cannot
+      # partially honour and resolves by killing something.
+      {
+        assertion = hardReserveViolations == [ ];
+        message = ''
+          nixhost: RAM hard-reserved beyond capacity at ${toString (length hardReserveViolations)} level(s)
+          of the environment tree:
+
+          ${concatStringsSep "\n          " hardReserveViolations}
+
+          `hardReserveMiB` renders to `memory.min`: memory the kernel must NEVER reclaim from that
+          environment. Two siblings each guaranteed more than exists between them is a promise one
+          of them will not receive, and the kernel does not resolve that by sharing -- it OOMs.
+
+          Unlike `limitMiB`, a null reservation is simply zero here rather than "unlimited": an
+          environment that reserves nothing takes nothing off the table, so these sums are complete
+          rather than a lower bound. Lower a reservation, or move it to `reserveMiB` if what was
+          meant is "prefer to keep this" rather than "never take this".
+        '';
+      }
+
+      # A single environment contradicting ITSELF, which neither sum above can see: both look
+      # across siblings, and these are all one node's own fields disagreeing.
+      {
+        assertion = incoherentFloors == [ ];
+        message = ''
+          nixhost: ${toString (length incoherentFloors)} environment(s) declare a floor that
+          contradicts their own other values:
+
+          ${concatStringsSep "\n          " incoherentFloors}
+
+          These are not oversubscription -- no sibling is involved. Each is one environment whose
+          own three RAM numbers cannot all be true at once, which is the shape a host declaration
+          copy-pasted from a differently-sized machine produces when one of the three was updated
+          and the others were not.
         '';
       }
 
