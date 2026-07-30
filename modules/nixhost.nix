@@ -267,54 +267,144 @@ let
             a GPU has two parents and the name has to agree for the conflict check below to
             mean anything. An environment with no entry here makes no claim on any GPU at all,
             equivalent to every device defaulting to `"none"`.
+
+            ⚠ GPU NAMES ARE HOST-SCOPED AT EVERY DEPTH, including inside a nested environment.
+            `host.vm.container.gpu.rx6800` is physically the SAME card as `host.gpu.rx6800` --
+            passing a device through to a guest does not mint a new one. So the conflict check
+            below flattens claims across the WHOLE tree, not one level of it: without that, a VM
+            claiming a card `exclusive` and a container three levels down claiming it `shared`
+            would never be detected, and exactly one of those two promises is a lie.
           '';
         };
+      };
+
+      # ── The recursion. An environment may itself host environments. ─────────────────────────
+      #
+      # Nesting is not a nicety, it is what the namespace actually describes. Bare metal is
+      # `host.gpu.app`; a container inside a VM is `host.vm.container.gpu.app`. The path is as
+      # long as the nesting is deep, and capping it at one level would make the model unable to
+      # state the ordinary case of a VM that runs containers.
+      #
+      # This is a SELF-REFERENTIAL type, and it terminates because Nix is lazy: an option's
+      # `type` is only forced when something actually reads that deep, so the definition may
+      # name itself without recursing at evaluation time.
+      #
+      # The consequence for every check below: an envelope is a projection of its IMMEDIATE
+      # PARENT, never of the host. A container inside a VM capped at 8 GiB cannot claim 16 GiB
+      # however much the host has, so the arithmetic is a walk that compares each node against
+      # its own parent -- not a single sum against the top-level total.
+      environments = mkOption {
+        type = types.attrsOf environmentSubmodule;
+        default = { };
+        description = ''
+          Environments standing on THIS environment, same shape as the host's own
+          `environments` -- a VM that runs podman containers, a k3s node inside a VM.
+
+          Empty (the default) for a leaf. What breaks without it: the namespace could not
+          express `host.vm.container.gpu.app` at all, and a container's claim would have to be
+          declared as though it stood directly on the host -- which would check it against the
+          wrong ceiling and let a guest over-claim its own parent silently.
+        '';
       };
     };
   };
 
   # ── Consistency arithmetic ──────────────────────────────────────────────────────────────────
 
-  envNames = attrNames cfg.environments;
+  # ── The tree walk ───────────────────────────────────────────────────────────────────────────
+  #
+  # `environments` is recursive (see the submodule above), so none of this can be a single sum
+  # over one level. Every check below walks the whole tree and compares each node against its
+  # OWN parent's ceiling -- a container inside a VM capped at 8 GiB is over-committed at 16 GiB
+  # regardless of how much the host has, and a flat sum against the host total would call that
+  # fine.
+  #
+  # Paths are carried through the walk so a violation can name the offender as
+  # `host.vm1.pod1` rather than just "some environment". At depth 3 in a tree of a dozen
+  # environments, a message that cannot say WHERE is a message nobody can act on.
 
-  ramClaimants = filter
-    (n: cfg.environments.${n}.resources.ram.limitMiB != null)
-    envNames;
-  ramClaimSum = foldl'
-    (acc: n: acc + cfg.environments.${n}.resources.ram.limitMiB)
-    0
-    ramClaimants;
+  # ONE traversal, feeding every check below. An earlier draft of this walked the tree twice --
+  # once for GPU claims and once, separately, inside the overcommit check -- and passed `null` as
+  # a stand-in for "the host" so the two could share a ceiling function. Two traversals of the
+  # same tree is two places for a depth bug to hide, and the null-as-host trick meant the host
+  # was not really a node like the others. Both are gone: the host is now simply the root
+  # container, and everything derives from a single list.
 
-  cpuClaimants = filter
-    (n: cfg.environments.${n}.resources.cpu.quotaCores != null)
-    envNames;
-  cpuClaimSum = foldl'
-    (acc: n: acc + cfg.environments.${n}.resources.cpu.quotaCores)
-    0
-    cpuClaimants;
+  # Every CONTAINER of environments, root first, then each environment that itself hosts more.
+  # `ceilings` is what that container has to give out; `children` is what claims it.
+  envContainers =
+    let
+      walk = prefix: envs:
+        concatMap
+          (n:
+            let node = envs.${n}; here = "${prefix}.${n}"; in
+            [{
+              path = here;
+              children = node.environments;
+              ram = node.resources.ram.limitMiB;
+              cpu = node.resources.cpu.quotaCores;
+            }]
+            ++ walk here node.environments)
+          (attrNames envs);
+    in
+    [{
+      path = "host";
+      children = cfg.environments;
+      ram = cfg.resources.ram.totalMiB;
+      # Physical cores, never threads: SMT adds schedulable slots, not execution capacity.
+      cpu = cfg.resources.cpu.cores;
+    }]
+    ++ walk "host" cfg.environments;
 
-  # Every non-"none" GPU claim, flattened across every environment, grouped by the DEVICE name
-  # it claims -- {"gpu0" = [ {env="k3s"; access="exclusive";} {env="podman"; access="shared";} ]; }.
+  # Every environment node, derived from the same walk rather than re-walking.
+  allEnvNodes =
+    concatMap
+      (c: map (n: { path = "${c.path}.${n}"; env = c.children.${n}; }) (attrNames c.children))
+      envContainers;
+
+  # Children's claims summed against the ceiling of the container they actually stand in. `null`
+  # is excluded rather than counted as zero, for the reason each option's own description gives:
+  # an unlimited environment makes no bounded claim, and counting it as zero would let every
+  # sibling run up to the full ceiling as though this one used nothing.
+  overcommitAt = pick: unit: c:
+    let
+      claimed = foldl'
+        (acc: n: let v = pick c.children.${n}; in if v == null then acc else acc + v)
+        0
+        (attrNames c.children);
+      ceiling = pick { resources = { ram.limitMiB = c.ram; cpu.quotaCores = c.cpu; }; };
+    in
+    optional (ceiling != null && claimed > ceiling)
+      "${c.path}: its environments claim ${toString claimed} ${unit}, but ${c.path} has ${toString ceiling} ${unit}";
+
+  ramViolations = concatMap (overcommitAt (e: e.resources.ram.limitMiB) "MiB") envContainers;
+  cpuViolations = concatMap (overcommitAt (e: e.resources.cpu.quotaCores) "cores") envContainers;
+
+  # Every non-"none" GPU claim in the ENTIRE tree, grouped by device name. Flattened across all
+  # depths on purpose: a device name is host-scoped (see the gpu option's own description), so a
+  # VM claiming a card exclusively and a container three levels down claiming it shared are
+  # contending for one piece of silicon and must collide here.
   gpuClaimsByDevice =
     foldl'
-      (acc: envName:
+      (acc: node:
         foldl'
           (acc2: gpuName:
-            let access = cfg.environments.${envName}.resources.gpu.${gpuName}.access;
+            let access = node.env.resources.gpu.${gpuName}.access;
             in
             if access == "none" then acc2
             else acc2 // {
-              ${gpuName} = (acc2.${gpuName} or [ ]) ++ [{ env = envName; inherit access; }];
+              ${gpuName} = (acc2.${gpuName} or [ ]) ++ [{ env = node.path; inherit access; }];
             })
           acc
-          (attrNames cfg.environments.${envName}.resources.gpu))
+          (attrNames node.env.resources.gpu))
       { }
-      envNames;
+      allEnvNodes;
 
   # A device is in conflict when more than one environment claims it AND at least one of those
   # claims is "exclusive" -- any number of "shared" claimants alone is fine (that is the whole
-  # point of "shared"); two "exclusive" claimants, or one "exclusive" next to any other claim,
-  # both count, per this file's header and rule 4 of the design this module implements.
+  # point of "shared"); two "exclusive" claimants, or one "exclusive" beside any other claim,
+  # both count. Not a precedence puzzle: exactly one of the two promises is false, and resolving
+  # it by attribute ordering would silently pick a winner.
   gpuConflicts = filterAttrs
     (_: claims: length claims > 1 && any (c: c.access == "exclusive") claims)
     gpuClaimsByDevice;
@@ -644,34 +734,41 @@ in
         '';
       }
 
-      # The arithmetic this whole repo exists to make possible: does the sum of every
-      # environment's own declared RAM ceiling exceed what this host actually has installed.
+      # The arithmetic this whole repo exists to make possible, now applied at EVERY level of the
+      # tree rather than only at the host: do the environments standing on a node claim more than
+      # that node itself has? A single sum against the host total would pass a container claiming
+      # 16 GiB inside a VM capped at 8 GiB, because the host has 128 GiB -- and that container is
+      # over-committed regardless of what the host has.
       {
-        assertion = ramClaimSum <= cfg.resources.ram.totalMiB;
+        assertion = ramViolations == [ ];
         message = ''
-          nixhost.environments: RAM claimed by ${toString (length ramClaimants)} environment(s)
-          (${concatStringsSep ", " (map (n: "${n}=${toString cfg.environments.${n}.resources.ram.limitMiB}MiB") ramClaimants)})
-          sums to ${toString ramClaimSum}MiB, which exceeds
-          nixhost.resources.ram.totalMiB = ${toString cfg.resources.ram.totalMiB}MiB actually
-          installed. Environments with no declared `ram.limitMiB` are excluded from this sum
-          (an unlimited claim is not a bounded one to check), so the real, live oversubscription
-          risk is at least this large. Lower a claim, or add RAM.
+          nixhost: RAM over-committed at ${toString (length ramViolations)} level(s) of the
+          environment tree:
+
+          ${concatStringsSep "\n          " ramViolations}
+
+          Each line compares one node's children against THAT NODE's own ceiling, not the host's
+          -- a guest cannot hand out more than it was given, however much the machine underneath
+          has. Environments with no declared `ram.limitMiB` are excluded from these sums (an
+          unlimited claim is not a bounded one to check), so the real oversubscription is at
+          least this large. Lower a claim, raise the parent's limit, or add RAM.
         '';
       }
 
-      # Same arithmetic, CPU cores (never threads -- see `resources.cpu.threads`'s own
-      # description for why summing against threads would silently allow real oversubscription).
+      # Same walk, CPU cores -- never threads. See `resources.cpu.threads`'s own description for
+      # why summing against threads would silently permit real oversubscription.
       {
-        assertion = cpuClaimSum <= cfg.resources.cpu.cores;
+        assertion = cpuViolations == [ ];
         message = ''
-          nixhost.environments: CPU claimed by ${toString (length cpuClaimants)} environment(s)
-          (${concatStringsSep ", " (map (n: "${n}=${toString cfg.environments.${n}.resources.cpu.quotaCores}") cpuClaimants)})
-          sums to ${toString cpuClaimSum} cores, which exceeds
-          nixhost.resources.cpu.cores = ${toString cfg.resources.cpu.cores} physical cores
-          actually installed on this host (checked against CORES, deliberately never the higher
-          `threads` figure -- SMT does not manufacture real execution capacity). Environments
-          with no declared `cpu.quotaCores` are excluded from this sum. Lower a claim, or this
-          host does not have the CPU this set of environments collectively assumes.
+          nixhost: CPU over-committed at ${toString (length cpuViolations)} level(s) of the
+          environment tree:
+
+          ${concatStringsSep "\n          " cpuViolations}
+
+          Checked against physical CORES at the host and against a nested environment's own
+          `cpu.quotaCores` below it, deliberately never the higher `threads` figure -- SMT adds
+          schedulable slots, not execution capacity, so quoting against threads over-commits by
+          up to 2x while looking fine. Environments with no declared quota are excluded.
         '';
       }
     ]

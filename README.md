@@ -17,8 +17,9 @@ path rooted there —
 
 ```
 fileserver.storage.disks.pool0
-fileserver.gpu.apps                     # bare-metal consumers
-fileserver.k3s.gpu.apps                 # pod consumers of the SAME card
+fileserver.gpu.apps                     # bare metal: the host's own consumers
+fileserver.k3s.gpu.apps                 # pods on the SAME card
+fileserver.vm.container.gpu.apps        # and deeper -- a container inside a VM
 workstation.cpu.microarch
 ```
 
@@ -67,6 +68,46 @@ nixhost = {
   };
 };
 ```
+
+## The path is as long as the nesting is deep
+
+`environments` is recursive, because that is what the namespace already describes. Bare metal is
+`host.gpu.app`. A container inside a VM is `host.vm.container.gpu.app`. Nothing about the second
+is exotic — a VM that runs containers is the ordinary case — so capping the model at one level
+would make it unable to state the common thing:
+
+```nix
+nixhost.environments.vm1 = {
+  kind = "vm";
+  resources.ram.limitMiB = 32768;
+
+  environments.pod1 = {                       # a container inside that VM
+    kind = "podman";
+    resources.ram.limitMiB = 8192;
+
+    environments.inner = {                    # and inside that
+      kind = "lxc";
+      resources.ram.limitMiB = 2048;
+    };
+  };
+};
+```
+
+**Every envelope is checked against its immediate parent, never against the host.** A container
+claiming 16 GiB inside a VM capped at 8 GiB is over-committed even on a 128 GiB machine — a guest
+cannot hand out more than it was given. A flat sum against the host total would call that fine,
+which is why the check is a walk and the violation names the node: `host.vm1.pod1: its
+environments claim 16384 MiB, but host.vm1.pod1 has 8192 MiB`.
+
+**GPU names stay host-scoped at every depth.** `host.vm.container.gpu.rx6800` is physically the
+same card as `host.gpu.rx6800` — passthrough does not mint a new device — so the conflict check
+flattens claims across the whole tree. A VM claiming a card `exclusive` while a container three
+levels down claims it `shared` is one piece of silicon with two contradictory promises, and only
+a full-tree flatten sees it.
+
+How it is implemented, since it looks like it should not work: the submodule type is `let`-bound
+and refers to *itself*. Nix's laziness is what makes that terminate — an option's `type` is only
+forced when something actually reads that deep.
 
 ## Why a graph, not a tree
 

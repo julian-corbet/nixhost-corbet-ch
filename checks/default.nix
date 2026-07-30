@@ -137,6 +137,117 @@ let
     };
   };
 
+  # ── Nesting fixtures. The recursion is new behaviour and the flat fixtures above cannot
+  # exercise it at all: every one of them is one level deep, so they would pass identically
+  # against a module that silently ignored nested environments.
+
+  # host.vm.container.gpu.app -- three levels, the ordinary case of a VM running containers.
+  nestedThreeDeep = {
+    nixhost = {
+      name = "test-host";
+      stance.backend = "nixos";
+      resources = minimalHardware // {
+        ram.totalMiB = 65536;
+        gpu.gpu0 = { vendor = "amd"; pciId = "1002:73bf"; vramMiB = 16384; };
+      };
+      environments.vm1 = {
+        kind = "vm";
+        resources.ram.limitMiB = 32768;
+        environments.pod1 = {
+          kind = "podman";
+          resources.ram.limitMiB = 8192;
+          environments.inner = { kind = "lxc"; resources.ram.limitMiB = 2048; };
+        };
+      };
+    };
+  };
+
+  # THE CASE A FLAT SUM MISSES: the container over-claims its PARENT (16 GiB inside an 8 GiB
+  # VM) while remaining far below the host total (65536). A check that only summed against the
+  # host would call this fine.
+  nestedOvercommit = {
+    nixhost = {
+      name = "test-host";
+      stance.backend = "nixos";
+      resources = minimalHardware // { ram.totalMiB = 65536; };
+      environments.vm1 = {
+        kind = "vm";
+        resources.ram.limitMiB = 8192;
+        environments.pod1 = { kind = "podman"; resources.ram.limitMiB = 16384; };
+      };
+    };
+  };
+
+  # Same shape for CPU, and against the parent's quota rather than the host's core count.
+  nestedCpuOvercommit = {
+    nixhost = {
+      name = "test-host";
+      stance.backend = "nixos";
+      resources = minimalHardware // { cpu = { arch = "x86_64"; cores = 16; threads = 32; }; };
+      environments.vm1 = {
+        kind = "vm";
+        resources.cpu.quotaCores = 4;
+        environments.pod1 = { kind = "podman"; resources.cpu.quotaCores = 8; };
+      };
+    };
+  };
+
+  # A GPU claimed exclusive by a VM and shared by a container THREE levels down. Physically one
+  # card -- passthrough does not mint a new device -- so exactly one of those promises is false.
+  # A one-level flatten would never see it.
+  nestedGpuConflict = {
+    nixhost = {
+      name = "test-host";
+      stance.backend = "nixos";
+      resources = minimalHardware // {
+        gpu.gpu0 = { vendor = "amd"; pciId = "1002:73bf"; vramMiB = 16384; };
+      };
+      environments.vm1 = {
+        kind = "vm";
+        resources.gpu.gpu0.access = "exclusive";
+        environments.pod1 = {
+          kind = "podman";
+          environments.inner = { kind = "lxc"; resources.gpu.gpu0.access = "shared"; };
+        };
+      };
+    };
+  };
+
+  # NEAREST NON-VIOLATION: a nested env with no declared limit at all must be EXCLUDED from its
+  # parent's sum, not counted as zero and not counted as unlimited. Its sibling claims 4096 of
+  # the parent's 8192, so the parent is fine.
+  nestedUnlimitedChild = {
+    nixhost = {
+      name = "test-host";
+      stance.backend = "nixos";
+      resources = minimalHardware // { ram.totalMiB = 65536; };
+      environments.vm1 = {
+        kind = "vm";
+        resources.ram.limitMiB = 8192;
+        environments.bounded = { kind = "podman"; resources.ram.limitMiB = 4096; };
+        environments.unbounded = { kind = "podman"; };
+      };
+    };
+  };
+
+  # NEAREST NON-VIOLATION: a deep tree where every level genuinely fits.
+  nestedFits = {
+    nixhost = {
+      name = "test-host";
+      stance.backend = "nixos";
+      resources = minimalHardware // { ram.totalMiB = 65536; };
+      environments.vm1 = {
+        kind = "vm";
+        resources.ram.limitMiB = 32768;
+        environments.pod1 = {
+          kind = "podman";
+          resources.ram.limitMiB = 16384;
+          environments.inner = { kind = "lxc"; resources.ram.limitMiB = 8192; };
+        };
+      };
+    };
+  };
+
   microarchMatchingArch = {
     nixhost = {
       name = "test-host";
@@ -363,6 +474,30 @@ let
     (check "module/omitting-class-and-role-builds-fine"
       (!(nixosBuildFails classAndRoleUnset))
       "leaving class and role unset must build: null means `not tracked for this host`, and an assertion firing on every host that does not track them would make the options unadoptable")
+
+    (check "nesting/three-levels-deep-builds-fine"
+      (!(nixosBuildFails nestedThreeDeep))
+      "host.vm.container is the ordinary case of a VM running containers and must evaluate -- if this fails the recursion itself is broken")
+
+    (check "nesting/child-overcommitting-its-PARENT-fails"
+      (nixosBuildFails nestedOvercommit)
+      "a container claiming 16GiB inside an 8GiB VM must fail even though the host has 65536MiB spare -- this is the exact case a flat sum against the host total would pass")
+
+    (check "nesting/child-overcommitting-parent-CPU-fails"
+      (nixosBuildFails nestedCpuOvercommit)
+      "a container claiming 8 cores inside a VM quota-limited to 4 must fail even though the host has 16 physical cores")
+
+    (check "nesting/gpu-conflict-across-depths-fails"
+      (nixosBuildFails nestedGpuConflict)
+      "a card claimed exclusive by a VM and shared by a container three levels down is one piece of silicon with two contradictory promises -- a one-level flatten would never see it")
+
+    (check "nesting/unlimited-nested-child-is-excluded-from-parent-sum"
+      (!(nixosBuildFails nestedUnlimitedChild))
+      "a nested environment with no declared limit makes no bounded claim and must be excluded from its parent's sum -- counting it as zero, or as unlimited, would both be wrong")
+
+    (check "nesting/deep-tree-that-fits-builds-fine"
+      (!(nixosBuildFails nestedFits))
+      "a three-level tree where every level fits inside its parent must evaluate -- the checks must not fire merely because nesting exists")
 
     (check "module/microarch-matching-arch-builds-fine"
       (!(nixosBuildFails microarchMatchingArch))
