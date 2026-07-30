@@ -17,9 +17,9 @@ path rooted there —
 
 ```
 fileserver.storage.disks.pool0
-fileserver.gpu.apps                     # bare metal: the host's own consumers
-fileserver.k3s.gpu.apps                 # pods on the SAME card
-fileserver.vm.container.gpu.apps        # and deeper -- a container inside a VM
+fileserver.gpu.gpu0                     # bare metal: the host's own inventory
+fileserver.k3s.gpu.gpu0                 # a k3s environment's stance on the SAME card
+fileserver.vm.container.gpu.gpu0        # and deeper -- a container inside a VM
 workstation.cpu.microarch
 ```
 
@@ -27,9 +27,74 @@ workstation.cpu.microarch
 environment standing on a host claims, checks it against what the host actually has, and
 refuses to evaluate if the claims don't fit.
 
+## Level 1 is a mirror. Nothing here declares a hardware fact.
+
+**If you want to know what CPU a host has, that lives in exactly one spot — and it is not this
+repo.** Every option under `resources` is `readOnly`, and its default is a defensive read of the
+repository that owns the fact:
+
+| `nixhost.resources.…` | mirrors | owner |
+|---|---|---|
+| `cpu.{arch,microarch,cores,threads,coreTypes,scheduler}` | `config.nixcpu.*` | [nixcpu](https://github.com/julian-corbet/nixcpu-corbet-ch) |
+| `ram.totalMiB` | `config.nixram.hardware.totalMiB` | [nixram](https://github.com/julian-corbet/nixram-corbet-ch) |
+| `gpu` | `config.nixgpu.stableDevicePaths.devices` | [nixgpu](https://github.com/julian-corbet/nixgpu-corbet-ch) |
+| `net` | `config.nixnet.interfaces` | [nixnet](https://github.com/julian-corbet/nixnet-corbet-ch) |
+| `storage.disks` | `config.nixstorage.disks` | [nixstorage](https://github.com/julian-corbet/nixstorage-corbet-ch) |
+
+The read is `config.<domain>.<path> or <empty>` — **never a flake input on the domain**. That's
+load-bearing in both directions: a domain repo has to stay usable by someone who has never heard of
+nixhost, so the dependency can only point this way; and a host has to be able to import nixhost
+while owning only some of those domains, so an absent domain resolves to `null`/`{ }` rather than
+erroring.
+
+There's a wrinkle worth knowing about, because a bare `or` gets it wrong: `or` tests whether an
+attribute *path* exists, and a declared option's path exists the moment its module is imported —
+definition or not. So for a field the owner requires (`nixcpu.cores` has no default), `or` hands back
+the module system's own throwing thunk rather than the fallback. nixhost collapses that case into the
+same `null`, because from here "the domain isn't imported" and "the domain is imported but the fact
+was never stated" are the same situation: there is no fact to mirror. Both then produce one assertion
+that names the option to set — see `mirrorOf` in the module for what that collapse costs.
+
+Setting one of these on a host is a build failure naming the owner to use instead, not an override —
+a second copy of a fact wouldn't be redundancy, it would be two numbers that agree today and
+disagree the day the hardware changes, with nothing comparing them.
+
+### …and why some of those mirrors carry an assertion the others don't
+
+`cpu.cores` and `ram.totalMiB` aren't only facts here, they're the **ceilings the oversubscription
+arithmetic divides against**. An empty disk table or an empty GPU inventory is a legitimate state; a
+missing core count is not — every comparison against it is vacuously true, so the check reports
+success while checking nothing. That's strictly worse than the required option it replaced, and
+worse in the invisible direction: no message, no warning, a green build.
+
+So a mirrored ceiling is **mirror + assert-resolved**: `readOnly`, a defensive default, *and* an
+assertion that fires whenever something actually depends on the ceiling and it didn't resolve.
+"Depends on it" is never restated as its own predicate — it's `claimed > 0`, computed by the very
+fold that would otherwise have divided against the missing number, so the guard can't drift out of
+step with the arithmetic it guards. A host that claims nothing is never asked for a ceiling.
+
+`cpu.arch` gets the same treatment for the same reason, one step removed: it isn't a ceiling, but the
+microarch-vs-arch cross-check divides a claim by it in spirit — with no `arch`, that check silently
+compares nothing. Every other mirror (`threads`, `microarch`, `coreTypes`, `scheduler`, `gpu`, `net`,
+`storage.disks`) is a plain mirror, because no check here depends on it, so an absent value disables
+nothing and `null`/`{ }` is a truthful answer.
+
 ## The model
 
 ```nix
+# LEVEL 1 — the machine itself, stated at each fact's OWNER. nixhost mirrors all of it,
+# read-only: none of these values is settable under `nixhost.resources`.
+nixcpu = {
+  arch      = "x86_64";                         # x86_64 | aarch64
+  microarch = "x86_64-v3";                      # cross-checked against arch, below
+  cores     = 16;  threads = 32;
+  scheduler = "bore";
+};
+nixram.hardware.totalMiB = 128 * 1024;
+nixgpu.stableDevicePaths.devices.gpu0 = { vendor = "amd"; pciId = "0x1002"; vramMiB = 16384; };
+nixnet.interfaces.lan0 = { mac = "aa:bb:cc:dd:ee:ff"; addresses.lan = "192.168.1.10"; };
+# nixstorage.disks.pool0 = { device = "/dev/disk/by-id/..."; };
+
 nixhost = {
   name = "fileserver";                          # REQUIRED, no default — the namespace root
 
@@ -42,19 +107,8 @@ nixhost = {
                                                 #   derives from either; see below.
   };
 
-  # LEVEL 1 — the machine itself.
-  resources = {
-    cpu = {
-      arch      = "x86_64";                     # x86_64 | aarch64
-      microarch = "x86_64-v3";                  # checked against arch, below
-      cores     = 16;  threads = 32;
-      scheduler = "bore";
-    };
-    ram.totalMiB = 128 * 1024;
-    gpu.gpu0     = { vendor = "amd"; pciId = "0x1002"; vramMiB = 16384; };
-    storage.disks = { }; # read-only mirror of config.nixstorage.disks — never restated here
-    net.lan0     = { mac = "aa:bb:cc:dd:ee:ff"; addresses.lan = "192.168.1.10"; };
-  };
+  # Read back out of the mirrors above, at this host's own namespace root:
+  #   fileserver.cpu.cores == 16, fileserver.gpu.gpu0.vramMiB == 16384, ...
 
   # LEVEL 2 — environments standing on this host. Each is a PROJECTION of level 1, never
   # the same object: k3s genuinely sees a constrained view and may be denied a device entirely.
@@ -72,7 +126,7 @@ nixhost = {
 ## The path is as long as the nesting is deep
 
 `environments` is recursive, because that is what the namespace already describes. Bare metal is
-`host.gpu.app`. A container inside a VM is `host.vm.container.gpu.app`. Nothing about the second
+`host.gpu.gpu0`. A container inside a VM is `host.vm.container.gpu.gpu0`. Nothing about the second
 is exotic — a VM that runs containers is the ordinary case — so capping the model at one level
 would make it unable to state the common thing:
 
@@ -113,8 +167,8 @@ forced when something actually reads that deep.
 
 A tree would put `gpu` under exactly one parent. Real hardware doesn't cooperate: one physical
 card is consumed by bare-metal apps running directly on the host AND by whatever pods a k3s
-environment standing on that SAME host schedules onto it. `fileserver.gpu.apps` and
-`fileserver.k3s.gpu.apps` are two different paths into one card, and `environments.<name>.
+environment standing on that SAME host schedules onto it. `fileserver.gpu.gpu0` and
+`fileserver.k3s.gpu.gpu0` are two different paths into one card, and `environments.<name>.
 resources.gpu.<name>` deliberately shares its key with `resources.gpu.<name>` rather than each
 environment inventing its own private device namespace — two environments claiming the
 identically-named device really are contending for one piece of silicon, and the exclusive/
@@ -127,7 +181,7 @@ crosses from one root to another; a graph's whole point is that it does.
 
 ## The arithmetic nothing else does today
 
-Five checks, each proven in `checks/` to fire when violated and stay silent when satisfied —
+Eight checks, each proven in `checks/` to fire when violated and stay silent when satisfied —
 never one without the other, since an assertion test that cannot fail is worthless:
 
 - **RAM oversubscription** — the sum of every environment's own `resources.ram.limitMiB`
@@ -142,18 +196,36 @@ never one without the other, since an assertion test that cannot fail is worthle
 - **Microarch vs. arch** — an x86_64 psABI level (`x86_64-v3`) declared while `arch = "aarch64"`,
   or the mirror-image ARM-family string declared on an `x86_64` host, fails the build. Both
   fields type-check as plain strings on their own; nothing but this cross-check would ever catch
-  a value surviving a copy-paste from one host's config to another's.
-- **GPU device completeness** — a declared `resources.gpu.<name>` entry with an empty vendor/
-  pciId or a non-positive `vramMiB` fails the build, rather than silently looking exactly like a
-  card that genuinely has no vendor to whatever reads this table next.
+  a value surviving a copy-paste from one host's config to another's. It is *not* redundant with
+  nixcpu's own arch/microarch assertion: that one lives behind `nixcpu.enable`, while the facts
+  resolve regardless, so a host that states them purely for something else to read is checked here
+  and nowhere else.
+- **Resolved RAM ceiling** — an environment declaring `ram.limitMiB` on a host whose
+  `ram.totalMiB` never resolved fails the build. The failure this prevents is the *green* one: an
+  oversubscription check comparing claims against nothing.
+- **Resolved CPU ceiling** — the same, for `cpu.quotaCores` against `cpu.cores`.
+- **Resolved arch** — a host with a `cpu.microarch` and no `cpu.arch` fails, because the
+  microarch-vs-arch cross-check is a comparison of the two and would otherwise be vacuously true.
+- **No second copy of a mirrored fact** — a level-1 resource declared on the host, rather than at
+  the domain that owns it, fails the build with a message naming the option to use instead.
+
+The last four are what makes level 1's move from hand-declared options to mirrors safe. Trading a
+loud "declare this" for a quiet "guard disabled" would have been a strictly worse repo, so each
+guard is proven both ways: the checks include a host with a RAM claim and no nixram (must fail) and
+a host with environments that claim nothing and no domain modules at all (must build).
 
 ## What it refuses to own
 
-- **How any domain works.** A GPU exists here as a vendor/PCI-ID/VRAM tuple; [nixgpu](https://github.com/julian-corbet/nixgpu-corbet-ch)
-  decides the scheduling mechanism that actually shares it. A disk exists here only as a
-  read-only mirror of [nixstorage](https://github.com/julian-corbet/nixstorage-corbet-ch)'s own
-  table — nixhost never restates a disk, and never adds a flake input on nixstorage to get one;
-  see `modules/nixhost.nix`'s own `resources.storage.disks` for the defensive-read idiom.
+- **Any hardware fact.** Not one of them: every level-1 resource is a read-only mirror of the
+  domain that owns it (see the table above), and nixhost adds no flake input on any of those repos
+  to get one. A GPU exists here as whatever [nixgpu](https://github.com/julian-corbet/nixgpu-corbet-ch)'s
+  own inventory says it is — mirrored *opaquely*, because the shape of a device is nixgpu's to
+  define and revise, and this module reads nothing inside an entry but its name. A disk exists here
+  as [nixstorage](https://github.com/julian-corbet/nixstorage-corbet-ch)'s own table, same idiom,
+  same reason.
+- **How any domain works.** nixgpu decides the scheduling mechanism that actually shares a card;
+  nixstorage decides a disk's filesystem shape; nixram decides what a memory level implies for
+  zram. This module knows the quantities and none of the mechanisms.
 - **Policy.** Which services actually run on a host is that host's own configuration's business.
   `environments.<name>` says a k3s node exists and how much of the host it may claim, never
   which pods it runs.
@@ -213,22 +285,36 @@ strength of the same reasoning but is not yet backed by a check — see
 {
   inputs.nixhost.url = "github:julian-corbet/nixhost-corbet-ch";
 
-  outputs = { self, nixpkgs, nixhost, ... }: {
+  # nixhost itself depends on none of these -- they are the owners of the facts it mirrors, and a
+  # host brings in whichever of them it actually has facts for.
+  inputs.nixcpu.url = "github:julian-corbet/nixcpu-corbet-ch";
+  inputs.nixram.url = "github:julian-corbet/nixram-corbet-ch";
+  inputs.nixgpu.url = "github:julian-corbet/nixgpu-corbet-ch";
+
+  outputs = { self, nixpkgs, nixhost, nixcpu, nixram, nixgpu, ... }: {
     nixosConfigurations.example-host = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       modules = [
         nixhost.nixosModules.default
 
+        # The domains that OWN this host's hardware facts. nixhost mirrors them read-only; it
+        # takes no flake input on any of them, so bring in only the ones you actually use --
+        # a mirror with no owner present resolves to null/{ }, and only becomes an error if
+        # something asks this module to check a claim against it.
+        nixcpu.nixosModules.default
+        nixram.nixosModules.default
+        nixgpu.nixosModules.default
+
         {
+          nixcpu = { arch = "x86_64"; cores = 16; threads = 32; };
+          nixram.hardware.totalMiB = 65536;
+          nixgpu.stableDevicePaths.devices.gpu0 = {
+            vendor = "amd"; pciId = "0x1002"; vramMiB = 16384;
+          };
+
           nixhost = {
             name = "example-host";
             stance.backend = "nixos";
-
-            resources = {
-              cpu = { arch = "x86_64"; cores = 16; threads = 32; };
-              ram.totalMiB = 65536;
-              gpu.gpu0 = { vendor = "amd"; pciId = "0x1002"; vramMiB = 16384; };
-            };
 
             environments.cluster-node = {
               kind = "k3s";
@@ -252,23 +338,24 @@ system every other fact in a NixOS configuration already goes through.
 
 ## Status
 
-The module and its five assertion groups are complete, exported for NixOS, system-manager, and
+The module and its eight assertion groups are complete, exported for NixOS, system-manager, and
 (unverified, see above) nix-darwin, and covered by eval-time tests proving every assertion both
 fires on a genuinely broken input and stays silent on a genuinely correct one — including the
 two boundary cases that matter most: claims summing to EXACTLY a total (must pass) and a CPU
 claim that fits under `threads` but not `cores` (must still fail). See
 [`experiments/README.md`](experiments/README.md) for what's reasoned but not yet measured: real
 nix-darwin composition, whether a per-environment VRAM claim would add anything nixgpu's own
-live pressure-watcher doesn't already do better, `resources.storage.disks` against a genuinely
-populated `nixstorage.disks` table, the cross-host graph resolved across two real hosts, and
-behavior at a host running more than a couple of environments at once.
+live pressure-watcher doesn't already do better, the mirrors against the REAL domain modules
+rather than the option-shape stubs `checks/` supplies, whether a GPU claim naming a device the
+mirrored inventory doesn't contain should itself be an error, the cross-host graph resolved across
+two real hosts, and behavior at a host running more than a couple of environments at once.
 
 ## Repository layout
 
 | Path | Purpose |
 |---|---|
 | `flake.nix` | Flake entry point: `nixosModules.default` / `systemManagerModules.default` / `darwinModules.default` (the same file, all three). |
-| `modules/nixhost.nix` | The module: the full option surface (`stance`, `resources`, `environments`) and the five assertion groups. |
+| `modules/nixhost.nix` | The module: the full option surface (`stance`, `resources`, `environments`) and the eight assertion groups. Every `resources` field is a read-only mirror of the domain that owns it. |
 | `examples/host/configuration.nix` | A complete, self-contained, entirely fictional host — the shape `checks/`'s `example/modules-evaluate` test proves evaluates cleanly on its own. |
-| `checks/` | Eval-time tests: every assertion proven in both directions, plus NixOS/system-manager backend parity. |
+| `checks/` | Eval-time tests: every assertion proven in both directions, plus NixOS/system-manager backend parity. `checks/domain-stubs.nix` supplies the mirrored domains' option SHAPE, so the mirrors can be tested without this repo taking a flake input on five other repos. |
 | `experiments/`, `studies/` | Open questions this repo's own reasoning hasn't yet measured, and the (currently empty) record of the ones that have been. |

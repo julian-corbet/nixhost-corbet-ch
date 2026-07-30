@@ -7,7 +7,7 @@ something in here turns out to matter, distill the actual finding into
 
 This is also the open-questions ledger for nixhost's own judgment calls -- every entry below
 corresponds to a claim reasoned in a module or README comment but not actually measured or
-exercised by `checks/`. `nix flake check` proves the option surface and its five assertion
+exercised by `checks/`. `nix flake check` proves the option surface and its eight assertion
 groups *evaluate* correctly against small, hand-written fixtures (see `checks/default.nix`);
 none of it has been run against real hosts.
 
@@ -37,13 +37,12 @@ and add it to the backend-parity checks alongside the existing NixOS/system-mana
 
 ## 002 — should an environment's GPU claim carry a VRAM quantity, not just an access stance?
 
-**Question:** `resources.gpu.<name>.vramMiB` is a level-1 hardware fact; nothing at level 2
-claims a VRAM quantity against it -- an environment's only GPU claim is the `none`/`shared`/
-`exclusive` access stance. That was a deliberate scope decision (see `modules/nixhost.nix`'s
-own description on `vramMiB`: VRAM oversubscription fails at allocation time on the consumer's
-own silicon, which is arbitration nixgpu already owns), but it has not been weighed against a
-real workload where "shared" hides a genuine VRAM contention two co-resident environments both
-assumed would fit.
+**Question:** the mirrored device table carries a `vramMiB` per device (nixgpu's field, not this
+repo's); nothing at level 2 claims a VRAM quantity against it -- an environment's only GPU claim is
+the `none`/`shared`/`exclusive` access stance. That was a deliberate scope decision (VRAM
+oversubscription fails at allocation time on the consumer's own silicon, which is arbitration nixgpu
+already owns), but it has not been weighed against a real workload where "shared" hides a genuine
+VRAM contention two co-resident environments both assumed would fit.
 
 **Hypothesis:** access-stance-only is probably still correct -- a MiB-level VRAM budget per
 environment would be exactly the "derived config" this module's own header refuses to own
@@ -51,28 +50,44 @@ environment would be exactly the "derived config" this module's own header refus
 than any static claim declared here could be) -- but this has not been checked against nixgpu's
 real behavior to confirm a static claim would add nothing nixgpu doesn't already do better.
 
+Note what changed with the mirrors: nothing in this module now reads `vramMiB` at all (the device
+completeness assertion that used to force it is gone, since nixgpu enforces its own required
+fields). So adding a VRAM ceiling here would mean this module reaching INSIDE an opaquely-mirrored
+table for the first time, which is a bigger step than it was when the field was declared here.
+
 **Method sketch:** once this module is wired into the same host nixgpu already runs on, compare
 what nixgpu's live pressure-watcher actually observes against what a hypothetical static
 per-environment VRAM claim here would have predicted, for at least one real contention event.
 
 **Status:** open.
 
-## 003 — `resources.storage.disks`'s reflection of `nixstorage.disks` is only proven empty
+## 003 — the mirrors are proven against a STUB of each owner's option surface, not the owner
 
-**Question:** `checks/default.nix` proves the defensive-read fallback (`config.nixstorage.disks
-or { }` resolves to `{ }` when nixstorage is not imported at all, since this repo takes no
-flake input on it by design) -- it has never been evaluated with a REAL `nixstorage.disks`
-table actually present, to confirm the mirrored value at `nixhost.resources.storage.disks`
-genuinely equals it, and that `readOnly = true` really does refuse a second, conflicting
-definition here the way it is supposed to.
+**Question:** all five level-1 mirrors (`cpu.*`, `ram.totalMiB`, `gpu`, `net`, `storage.disks`) are
+now tested in both directions -- populated (the mirrored value equals the fact) and absent (the
+defensive read takes its `null`/`{ }` fallback) -- but the "populated" half runs against
+`checks/domain-stubs.nix`, a hand-written declaration of nixcpu/nixram/nixgpu/nixnet/nixstorage's
+option SHAPE at exactly the paths the mirrors read. It is not those repos. Nothing in this repo
+notices if an upstream option is renamed, retyped, or moved: a green check here means "the mirror
+reads the shape that file describes", never "the mirror reads nixcpu".
 
-**Hypothesis:** this should work exactly as nixboot's `esp.fromLayout` defensive read already
-does in production against `nixstorage.layout` -- the same idiom, one repo over -- but has not
-actually been composed against a real `nixstorage.disks` table in this repo's own `checks/`.
+This is the deliberate cost of taking no flake input on the owners (see `domain-stubs.nix`'s own
+header for why five checks-only inputs is the worse trade), and it is a real gap, not a hypothetical
+one: a rename upstream would leave every check here green while every host silently fell back to
+`null` -- which the assert-resolved assertions would catch for the two ceilings, and would NOT catch
+for `gpu`/`net`/`storage.disks`, where an empty table is a legitimate state.
 
-**Method sketch:** add `nixstorage` as a `checks`-only input, compose both modules together
-with a small disk fixture, and assert `config.nixhost.resources.storage.disks ==
-config.nixstorage.disks` on the resulting evaluation.
+**Hypothesis:** the stub is faithful today (it was written by reading each owner's option
+declaration field by field, including which fields have no default), and the mirrors work exactly
+as nixboot's `esp.fromLayout` defensive read already does in production against `nixstorage.layout`.
+But faithfulness is a property of a moment, not of a design.
+
+**Method sketch:** two candidates, and the choice is itself the open question. Either (a) a CI job
+outside this repo -- in whichever flake actually composes the family -- that evaluates nixhost
+against the real modules and asserts each mirror equals its source, which keeps this repo
+input-free and puts the integration test where the integration actually happens; or (b) a
+`nix eval` smoke test that fetches each owner's `options` and compares the paths this repo reads
+against them, failing on a rename without depending on the modules at build time.
 
 **Status:** open.
 
@@ -119,5 +134,76 @@ a benchmark.
 **Method sketch:** generate a synthetic ten-or-more-environment fixture and confirm both eval
 time and the rendered assertion messages (particularly the RAM/CPU oversubscription messages,
 which list every claimant by name) stay fast and legible at that size.
+
+**Status:** open.
+
+## 006 — should a GPU claim naming a device the mirrored inventory doesn't contain be an error?
+
+**Question:** `environments.<name>.resources.gpu.<device>.access` and `resources.gpu.<device>` share
+a key on purpose, and now that the device table is a mirror of `nixgpu.stableDevicePaths.devices`
+there is, for the first time, a real inventory a claim could be checked against. Nothing checks it:
+a claim naming `gpu1` on a host whose inventory has only `gpu0` evaluates cleanly, and the
+exclusivity conflict check happily groups claims for a device that does not exist.
+
+**Hypothesis:** leaving it unchecked is probably right, and for a specific structural reason rather
+than conservatism. The conflict check does not divide against the inventory -- it groups claims by
+name and needs no device table at all -- so an empty inventory disables nothing, and there is no
+silent-guard-loss to repair (unlike `cores`/`totalMiB`, where MIRROR + ASSERT-RESOLVED was
+mandatory). Adding the check would therefore mean either a new guard that self-disables whenever
+nixgpu is absent -- the exact anti-pattern this repo's ceiling assertions exist to avoid -- or an
+assert-resolved-style rule that any GPU claim REQUIRES nixgpu to be imported, which makes a
+perfectly checkable claim undeclarable on a host that does not own the GPU domain.
+
+**Method sketch:** count, across real hosts once several are wired up, how often a claim names a
+device absent from the inventory, and whether those cases were typos (an argument for the check) or
+hosts that legitimately declare claims before nixgpu is adopted (an argument against). A typo rate
+above zero with no legitimate second case would settle it.
+
+**Status:** open.
+
+## 007 — `resources.cpu.coreTypes` is mirrored but read by nothing
+
+**Question:** `coreTypes` (nixcpu's P-core/E-core split) is mirrored so the fact is addressable at
+`<host>.cpu.coreTypes`, closing an asymmetry where nixcpu owned a CPU fact this namespace could not
+reach. But no assertion here reads it, and in particular the CPU oversubscription check treats all
+cores as interchangeable -- it sums `quotaCores` against `cores` with no notion that 8 of those
+cores are efficiency cores that deliver a fraction of the throughput the same quota number buys on a
+performance core.
+
+**Hypothesis:** the sum is still the right check -- a quota is a quota, and which physical cores a
+workload lands on is a scheduling decision (nixcpu's own description says as much), not something a
+declaration-time envelope can predict. But "16 cores of ceiling" genuinely means two different
+things on a hybrid host, and it is not obvious that the arithmetic should stay blind to that.
+
+**Method sketch:** state a hybrid host's real `coreTypes` and a set of environment quotas that
+together fit `cores` but would not fit if E-cores were discounted, then check whether the resulting
+allocation actually behaves like the numbers promised. Only a measurement can say whether the
+distinction belongs in this arithmetic or nowhere near it.
+
+**Status:** open.
+
+## 008 — `mirrorOf` reports a type error at the owner as an unresolved fact
+
+**Question:** every level-1 mirror resolves through `mirrorOf`, which `tryEval`s the defensive read
+so that a domain imported *without* the fact stated arrives as `null` instead of aborting evaluation
+from inside an option default. That collapse also swallows a genuine TYPE error at the owner: a
+`nixcpu.cores = "sixteen"` rejected by nixcpu's own `ints.positive` reaches nixhost as `null` and is
+reported as "the fact did not resolve" rather than "the value was rejected". The assert-resolved
+messages name all three possible causes and tell the operator to evaluate the owner's option
+directly, but that is a mitigation, not a fix.
+
+**Hypothesis:** the trade is right, and narrower than it sounds. A type error at the owner is loud
+already whenever the owner reads its own field (nixcpu's assertions do, when `nixcpu.enable` is
+true), so the masked window is only "facts stated for someone else to read, with the domain's own
+policy switched off, and a value of the wrong type". Against that, refusing the collapse costs a
+consistent failure mode for the *common* mistake (a fact simply never stated) and, as this repo
+found the hard way, makes a mirror's definition list uninspectable — the module system forces every
+definition's value while discharging `mkIf`/`mkMerge`, so a throwing default broke the check that
+detects a second declaration.
+
+**Method sketch:** the honest test is frequency, not reasoning: across real hosts, count how often a
+level-1 fact fails to resolve, and how many of those turn out to be a rejected value rather than an
+absent one. A non-trivial share would argue for distinguishing them — plausibly by having `mirrorOf`
+report WHICH branch it took, and letting the assertion say so, rather than by removing the collapse.
 
 **Status:** open.
