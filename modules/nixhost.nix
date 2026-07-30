@@ -93,10 +93,19 @@
 # - POLICY. Which services actually run on a host is that host's own configuration, not this
 #   module's business -- `environments.<name>` says a k3s node exists and how much of the host
 #   it may claim, never which pods it runs.
-# - DERIVED CONFIG. The moment a fact declared here turns into a tuning value (a cgroup weight,
-#   a nice level, a specific kernel parameter), this stops being a one-way fact table and
-#   becomes a policy engine with an opinion. Enums and quantities go in; nothing computed from
-#   them is allowed to live here.
+# - PLATFORM-SPECIFIC RENDERING. This FILE stays pure data, and the reason is concrete rather
+#   than philosophical: it is imported unchanged by nixosModules, systemManagerModules and
+#   darwinModules, so anything it computed would have to be meaningful on all three, and a
+#   cgroup attribute is meaningless under nix-darwin. Derivation therefore lives in the
+#   separately-exported sibling modules, which each host imports only if its platform has the
+#   mechanism.
+#
+#   This replaces an earlier, stronger claim that "nothing computed from these facts is allowed
+#   to live here" anywhere in the repo -- that a fact turning into a tuning value would make this
+#   a policy engine. That framing was wrong and has been withdrawn: a fact table nothing derives
+#   from is a fact table nothing uses, and the whole point of declaring a resource envelope is
+#   that something downstream renders it. The real boundary is the file/platform one above, not a
+#   prohibition on derivation.
 #
 # ── THE SUBSTRATE CONTRACT: one declaration, four mechanisms ─────────────────────────────────
 #
@@ -215,7 +224,7 @@ let
   environmentSubmodule = types.submodule {
     options = {
       kind = mkOption {
-        type = types.enum [ "k3s" "vm" "podman" "lxc" ];
+        type = types.enum [ "k3s" "vm" "podman" "lxc" "native" ];
         example = "k3s";
         description = ''
           What kind of environment this is. Required, with no default: an environment this
@@ -228,6 +237,21 @@ let
           -- a cluster with a control plane, hardware emulation, an OCI runtime, a system
           container -- that share a DECLARATION and share almost no code. Adding a member here
           is how a new substrate becomes a first-class peer of the others.
+
+          `native` is the exception to that one-repo-per-member pattern, and exists because the
+          four above all describe a substrate that CONTAINS something, which left no way to say
+          "this claim belongs to processes running directly on the metal". A desktop session, a
+          compositor, a build daemon -- anything in the host's own cgroup hierarchy rather than
+          inside a container, VM or cluster -- had no address here at all, so the one tenant on a
+          mixed host that is NOT a substrate was the one tenant that could not be declared, and
+          its resource claims silently did not exist for the arithmetic below.
+
+          A `native` environment is a real claimant and is summed like any other. What it does
+          not have is a substrate to project further: `environments` beneath it is available (the
+          submodule is recursive) but expected to stay empty, because a process on the metal
+          contains nothing. Nothing enforces that -- an empty branch of a recursive type costs
+          nothing and inventing a special case to forbid it would be more machinery than the
+          thing it prevents.
         '';
       };
 

@@ -26,6 +26,14 @@
 # real configuration is the imports, not the facts.
 { ... }:
 {
+  # Each tenant declares itself, in its own file. Adding or removing one is adding or removing an
+  # import -- no central list to keep in step, and no file that has to know the whole host.
+  imports = [
+    ./env-desktop.nix
+    ./env-cluster.nix
+    ./env-devhome.nix
+  ];
+
   # ── Level 1, stated at each fact's owner. nixhost mirrors all of it, read-only. ────────────
   nixcpu = {
     arch = "x86_64";
@@ -59,30 +67,16 @@
       provider = "metal";
     };
 
-    # Two environments standing on this same host, sharing the one card declared above by
-    # name -- neither claims "exclusive", so both co-resident "shared" claims are consistent.
-    # Their RAM and CPU claims are what make the mirrored ceilings load-bearing here: remove the
-    # `nixram.hardware.totalMiB` above and this file no longer evaluates, because the
-    # oversubscription check would otherwise have nothing to compare 8192 + 49152 against.
-    environments = {
-      desktop-workload = {
-        kind = "podman";
-        resources = {
-          ram.limitMiB = 8192;
-          cpu.quotaCores = 4;
-          gpu.gpu0.access = "shared";
-        };
-      };
-
-      cluster-node = {
-        kind = "k3s";
-        resources = {
-          ram.limitMiB = 49152;
-          cpu.quotaCores = 10;
-          gpu.gpu0.access = "shared";
-        };
-      };
-    };
+    # NO `environments` HERE, DELIBERATELY -- see env-*.nix beside this file.
+    #
+    # `environments` is an ordinary `attrsOf submodule`, so the module system's own merge lets
+    # each tenant be contributed from its OWN module, by whoever owns that tenant. Nothing has to
+    # enumerate the tree in one place, and this example used to anyway -- which made the whole
+    # design read as a central slicing table divided top-down, when the arithmetic underneath is
+    # the opposite: each claim is declared locally and VERIFIED by aggregating upward against the
+    # mirrored ceiling. A file that lists every tenant is a documentation choice, not the shape of
+    # the module, and it was the only thing here that looked like the pattern this design exists
+    # to avoid.
   };
 
   # ── Stubs NixOS demands of any bootable system ───────────────────────────

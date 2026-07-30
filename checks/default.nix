@@ -185,6 +185,38 @@ let
     };
   };
 
+  # ── `native`: a claimant that is not a substrate ────────────────────────────────────────────
+  # The four container/VM/cluster kinds all describe something that CONTAINS workloads, which left
+  # processes on the metal (a desktop session, a compositor) with no address at all -- so the one
+  # tenant on a mixed host that is not a substrate was the one whose claims silently did not exist.
+
+  # A native tenant beside a k3s node, together fitting the host. Must build.
+  nativeBesideCluster = hostWith [ cpu16c32t ram64g ] {
+    environments = {
+      devhome = { kind = "native"; resources.ram.limitMiB = 8192; };
+      cluster = { kind = "k3s"; resources.ram.limitMiB = 32768; };
+    };
+  };
+
+  # THE POINT OF THE MEMBER: the native claim must actually COUNT. 40960 + 32768 > 65536, and it
+  # only overcommits once the native tenant is included -- a module that accepted `native` as a
+  # label but skipped it in the fold would pass this.
+  nativeCountsInTheSum = hostWith [ cpu16c32t ram64g ] {
+    environments = {
+      devhome = { kind = "native"; resources.ram.limitMiB = 40960; };
+      cluster = { kind = "k3s"; resources.ram.limitMiB = 32768; };
+    };
+  };
+
+  # A native tenant must be subject to the GPU conflict check like any other claimant: here it
+  # claims the card exclusively while a cluster node also wants it.
+  nativeGpuConflict = hostWith [ cpu16c32t ram64g oneAmdCard ] {
+    environments = {
+      devhome = { kind = "native"; resources.gpu.gpu0.access = "exclusive"; };
+      cluster = { kind = "k3s"; resources.gpu.gpu0.access = "shared"; };
+    };
+  };
+
   # Same shape for CPU, and against the parent's quota rather than the host's core count.
   nestedCpuOvercommit = hostWith baseFacts {
     environments.vm1 = {
@@ -467,6 +499,18 @@ let
     (check "module/omitting-class-and-role-builds-fine"
       (!(nixosBuildFails classAndRoleUnset))
       "leaving class and role unset must build: null means `not tracked for this host`, and an assertion firing on every host that does not track them would make the options unadoptable")
+
+    (check "native/beside-a-cluster-builds-fine"
+      (!(nixosBuildFails nativeBesideCluster))
+      "a desktop session on the metal alongside a k3s node is the mixed-host case this member exists for and must evaluate")
+
+    (check "native/claim-counts-in-the-parent-sum"
+      (nixosBuildFails nativeCountsInTheSum)
+      "40960 native + 32768 cluster exceeds a 65536MiB host, and ONLY once the native claim is counted -- a module that accepted `native` as a label but skipped it in the fold would pass this, which is the whole failure the member was added to prevent")
+
+    (check "native/is-subject-to-gpu-conflict-detection"
+      (nixosBuildFails nativeGpuConflict)
+      "a native tenant claiming a card exclusively while a cluster node claims it shared is one piece of silicon with two contradictory promises -- being on the metal rather than in a container must not exempt a claimant from the conflict check")
 
     (check "nesting/three-levels-deep-builds-fine"
       (!(nixosBuildFails nestedThreeDeep))
