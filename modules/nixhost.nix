@@ -5,7 +5,7 @@
 # `workstation.cpu.microarch`, `fileserver.k3s.gpu.apps` -- and this module is where that
 # segment, and everything hanging off it, gets declared and checked. It is imported ONCE per
 # host, by that host's own configuration, never by a registry describing many hosts at once
-# (a per-estate registry's job -- this module is imported once PER HOST, by that host's
+# (that's a cross-host registry's job -- this module is imported once PER HOST, by that host's
 # own configuration).
 #
 # THIS MODULE IS PURE DATA. Read that literally: no `systemd.services`, no
@@ -108,7 +108,7 @@ let
         description = ''
           The PCI vendor ID exactly as `/sys/class/drm/cardN/device/vendor` reports it (AMD is
           `0x1002`, Intel `0x8086`, NVIDIA `0x10de` -- catalogue facts about the hardware, not a
-          choice this repo or any one estate makes). This is the STABLE identity a udev rule or
+          choice this repo or any operator makes). This is the STABLE identity a udev rule or
           a device plugin actually matches on; `vendor`, above, is for humans reading a rendered
           table, never for matching a device.
         '';
@@ -288,8 +288,8 @@ let
     (_: claims: length claims > 1 && any (c: c.access == "exclusive") claims)
     gpuClaimsByDevice;
 
-  # `x86_64-v1`..`-v4` are the real psABI microarchitecture levels this estate's own CachyOS
-  # kernel package names carry (`linux-cachyos-…-x86_64-v3`); an aarch64-family string here
+  # `x86_64-v1`..`-v4` are the real psABI microarchitecture levels CachyOS kernel package names
+  # carry (`linux-cachyos-…-x86_64-v3`); an aarch64-family string here
   # (`armv8.2-a`, a bare `arm`/`aarch64` prefix) is the mirror-image mistake. Vendor-specific
   # names that classify as neither (`apple-m1`, `neoverse-n1`, `cortex-a76`, `bore` -- which is
   # a SCHEDULER, not a microarch, and belongs in `scheduler` instead) are deliberately left
@@ -314,8 +314,8 @@ in
         The namespace root: the first path segment of every fact this family can state about
         this host (`<name>.storage.disks.solid0`, `<name>.cpu.microarch`, ...). Required, with
         NO default, on purpose: this is the one field a sensible-looking guess is actively
-        dangerous for. A default of, say, `"host"` would type-check on every machine in an
-        estate simultaneously -- silently giving every host the SAME namespace root, so a
+        dangerous for. A default of, say, `"host"` would type-check on every machine
+        simultaneously -- silently giving every host the SAME namespace root, so a
         cross-host reference resolved against one machine's data would resolve just as
         "successfully" against another's. There is no safe default for a value whose entire
         job is to be unique.
@@ -344,10 +344,10 @@ in
         example = "nixnas";
         description = ''
           The distribution/appliance flavour layered on top of `backend`, in whatever
-          vocabulary the estate importing this module actually uses (this family's own repos
+          vocabulary the operator importing this module actually uses (this family's own repos
           happen to include appliance-flavour projects named things like `nixnas` or `nixarch`
           -- shown here purely as an example spelling, never as a fixed catalogue: a different
-          estate's flavours are its own to name). `null` (the default) is the correct, final
+          operator's flavours are its own to name). `null` (the default) is the correct, final
           answer for a plain host with no such layer, not a placeholder for "not yet decided".
         '';
       };
@@ -357,10 +357,65 @@ in
         default = null;
         example = "metal";
         description = ''
-          Where this host actually runs, in whatever vocabulary the estate uses (bare metal, an
+          Where this host actually runs, in whatever vocabulary the operator uses (bare metal, an
           LXC container, a cloud VM -- `"metal"`/`"lxc"`/`"gce"`/`"vultr"` shown only as example
           spellings, an open set that grows by using a new one, never a fixed enum). `null` (the
           default) means this fact simply is not tracked for this host, not that it is unknown.
+        '';
+      };
+
+      # ── class and role: FACTS ONLY. Nothing here may derive from them. ──────────────────────
+      #
+      # These two exist because consuming domains need to branch on them, and every domain that
+      # needs the answer would otherwise carry its own per-host copy -- which is exactly how one
+      # fact ends up typed in five places and drifting in four.
+      #
+      # ⚠ THE ONE-WAY RULE, and it is why these are declared here and derived nowhere here: the
+      # moment this module turns `class` into a value -- a zram percentage, a cgroup weight, a
+      # journald cap -- it stops being a fact table and becomes a policy engine with an opinion,
+      # and every consumer inherits that opinion whether or not it wanted it. The domain that
+      # owns the knob owns the derivation: nixram decides what a memory class implies for zram,
+      # a storage domain decides what it implies for a scrub cadence. Enums and quantities in;
+      # nothing computed from them lives here.
+      #
+      # Free-form strings rather than an enum, deliberately, for the same reason as `flavour` and
+      # `provider` above: a public module has no business fixing one operator's tier vocabulary.
+      class = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "standard";
+        description = ''
+          The capability tier this host belongs to, in the operator's own vocabulary (something
+          like `"tiny"`/`"standard"`/`"fat"`, shown as example spellings only -- an open set,
+          never a fixed enum).
+
+          What breaks without it: every domain that must scale a value to the size of the machine
+          -- a memory subsystem sizing swap, a deploy pipeline deciding whether a host can afford
+          to build in place or must receive a prebuilt image -- has to answer "how big is this
+          host" for itself. In practice that means each one grows its own per-host table, and
+          those tables drift silently, because nothing compares them. Declared once here, they
+          all read the same answer.
+
+          This module never derives anything from it. See the header comment above.
+        '';
+      };
+
+      role = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "proxy";
+        description = ''
+          What this host is FOR, in the operator's own vocabulary -- again an open set, never an
+          enum.
+
+          What breaks without it: role-keyed policy has nowhere to key off, so "this is the mail
+          host" ends up implicit in which modules happen to be imported. That is unstateable and
+          therefore uncheckable -- no assertion can compare a host's intended role against what
+          it actually got, because the intent was never written down anywhere.
+
+          Distinct from `class` on purpose: two hosts can share a capability tier and do entirely
+          unrelated jobs, and collapsing the two into one field forces exactly the kind of
+          per-host special-casing this table exists to remove.
         '';
       };
     };
@@ -517,6 +572,31 @@ in
           nixhost.name is unset (or empty). This is the namespace root every fact about this
           host hangs off -- see this module's own header. There is no safe default: state the
           real hostname explicitly.
+        '';
+      }
+
+      # `stance.class` and `stance.role` are `nullOr str`, so `""` type-checks -- and `""` is
+      # strictly WORSE than `null` here, which is why it gets its own assertion rather than being
+      # left to the type. A consumer asking `class != null` sees a host that HAS a class; a
+      # consumer asking `class == "tiny"` sees one that does not match. So an empty string reads
+      # as "declared" to one branch and "absent" to the other, and the two disagree silently and
+      # permanently. `null` at least means the same thing to every reader.
+      {
+        assertion = cfg.stance.class != "";
+        message = ''
+          nixhost.stance.class is the empty string. Use `null` to mean "not tracked for this
+          host" -- `""` is not a weaker version of that, it is a value that reads as SET to a
+          null-check and as UNSET to any comparison, so two consumers of the same fact will
+          disagree about it and neither will error.
+        '';
+      }
+
+      {
+        assertion = cfg.stance.role != "";
+        message = ''
+          nixhost.stance.role is the empty string. Use `null` to mean "not tracked for this
+          host" -- see `stance.class`'s own assertion for why `""` is worse than absent rather
+          than equivalent to it.
         '';
       }
 

@@ -1,7 +1,7 @@
 # A generic single-GPU host, used by the `example/modules-evaluate` check.
 #
 # This is not a real machine -- see the repo README for why a public schema ships with an
-# invented example instead of one estate's actual inventory. The name, addresses, and every
+# invented example instead of one operator's actual inventory. The name, addresses, and every
 # quantity below are fictional, chosen only to exercise the module's real shape:
 #
 #   - a GPU with TWO consumers: a bare-metal podman workload and a k3s node standing on the

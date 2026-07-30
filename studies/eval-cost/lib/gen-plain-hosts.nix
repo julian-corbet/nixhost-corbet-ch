@@ -1,4 +1,4 @@
-# Synthesizes N hosts of estate facts as PLAIN DATA -- an ordinary attrset built by
+# Synthesizes facts for N hosts as PLAIN DATA -- an ordinary attrset built by
 # `builtins.listToAttrs`, no `lib.evalModules`, no options, no fixpoint. This is the shape the
 # design spec's hard rule requires (`../../../nixhost-spec.md`'s "REQUIRED" block): a fact tree
 # that evaluates with no module system at all, so reading `hosts.hostN.<fact>` forces only that

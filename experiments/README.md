@@ -9,7 +9,7 @@ This is also the open-questions ledger for nixhost's own judgment calls -- every
 corresponds to a claim reasoned in a module or README comment but not actually measured or
 exercised by `checks/`. `nix flake check` proves the option surface and its five assertion
 groups *evaluate* correctly against small, hand-written fixtures (see `checks/default.nix`);
-none of it has been run against a real multi-host estate.
+none of it has been run against real hosts.
 
 All open.
 
@@ -29,8 +29,8 @@ platform-specific option namespace referenced -- composes without incident, on t
 the exact same reasoning the other pure-data repos in this family offer for the same claim.
 
 **Method sketch:** add `nix-darwin` as a `checks`-only input, build a minimal
-`darwinConfiguration` composing `darwinModules.nixhost` with a small fixture (the Mac from the
-estate's own hosts are the natural real-world case: `aarch64`, no GPU, no `environments` at all),
+`darwinConfiguration` composing `darwinModules.nixhost` with a small fixture (the Mac from these
+hosts is the natural real-world case: `aarch64`, no GPU, no `environments` at all),
 and add it to the backend-parity checks alongside the existing NixOS/system-manager pair.
 
 **Status:** open.
@@ -105,7 +105,7 @@ transport-specific glue beyond ordinary flake output composition.
 ## 005 — untested at anything near a real multi-environment host's actual scale
 
 **Question:** every fixture in `checks/default.nix` declares at most two environments and two
-GPUs. fileserver alone (per the estate's own host facts) runs k3s plus podman plus the
+GPUs. fileserver alone (per its real host facts) runs k3s plus podman plus the
 desktop's own bare-metal GPU use simultaneously, and a larger host could plausibly stack
 more environments than that. Nothing here measures `nix flake check`'s eval time, or whether the
 generated assertion MESSAGES stay legible, against a host with, say, ten declared environments

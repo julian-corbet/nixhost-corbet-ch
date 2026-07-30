@@ -100,6 +100,43 @@ let
     };
   };
 
+  # `class`/`role` are nullOr str, so "" type-checks. The assertion exists because "" reads as
+  # SET to a null-check and UNSET to any comparison -- see the module's own assertion message.
+  classEmpty = {
+    nixhost = {
+      name = "test-host";
+      stance = { backend = "nixos"; class = ""; };
+      resources = minimalHardware;
+    };
+  };
+
+  roleEmpty = {
+    nixhost = {
+      name = "test-host";
+      stance = { backend = "nixos"; role = ""; };
+      resources = minimalHardware;
+    };
+  };
+
+  # The nearest NON-violations, and the ones that matter: a real value must pass, and so must the
+  # default of not declaring these at all -- an assertion that fired on every host which simply
+  # does not track a class would make the option unadoptable.
+  classAndRoleSet = {
+    nixhost = {
+      name = "test-host";
+      stance = { backend = "nixos"; class = "standard"; role = "proxy"; };
+      resources = minimalHardware;
+    };
+  };
+
+  classAndRoleUnset = {
+    nixhost = {
+      name = "test-host";
+      stance.backend = "nixos";
+      resources = minimalHardware;
+    };
+  };
+
   microarchMatchingArch = {
     nixhost = {
       name = "test-host";
@@ -310,6 +347,22 @@ let
     (check "module/empty-name-fails-the-build"
       (nixosBuildFails nameEmpty)
       "nixhost.name = \"\" must fail the build, same as omitting it entirely")
+
+    (check "module/empty-class-fails-the-build"
+      (nixosBuildFails classEmpty)
+      "stance.class = \"\" must fail the build -- it reads as declared to a null-check and as absent to any comparison, so two consumers of the same fact disagree silently")
+
+    (check "module/empty-role-fails-the-build"
+      (nixosBuildFails roleEmpty)
+      "stance.role = \"\" must fail the build, same reasoning as class")
+
+    (check "module/real-class-and-role-build-fine"
+      (!(nixosBuildFails classAndRoleSet))
+      "a genuine class and role must never fail the build -- the assertion is about the empty string, not about declaring these at all")
+
+    (check "module/omitting-class-and-role-builds-fine"
+      (!(nixosBuildFails classAndRoleUnset))
+      "leaving class and role unset must build: null means `not tracked for this host`, and an assertion firing on every host that does not track them would make the options unadoptable")
 
     (check "module/microarch-matching-arch-builds-fine"
       (!(nixosBuildFails microarchMatchingArch))

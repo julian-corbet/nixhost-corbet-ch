@@ -191,7 +191,7 @@ against a REAL host configuration, not this study's trivial one:
 The ~370x gap between this study's own floor and the design spec's real-host figure is
 *exactly* the "a trivial config understates real cost" caveat the task required flagging, not a
 discrepancy between two measurements of the same thing. This study's fixture imports nixpkgs's
-stock module list and nothing else; an actual estate host (per the family's own conventions)
+stock module list and nothing else; an actual host (per the family's own conventions)
 additionally imports nixk3s, nixgpu, nixstorage, nixboot, nixarch, home-manager, and dozens of
 enabled services, each contributing its own option surface, assertions, and (for anything using
 `types.submodule`) its own nested `evalModules` call on top of the ~0.6-0.8s floor measured
@@ -267,7 +267,7 @@ shape `nixhost`'s own five assertion groups all use -- scales that already-large
 by N with no sign of a ceiling before the design spec's own quoted 100-host / 2.6-hour figure.
 Cross-host assertions over plain data remain affordable well past 250 hosts on the evidence
 gathered here; the same assertions over evaluated per-host config were expensive from N=1 and
-would, by the design spec's own real-host number, be prohibitive at estate scale. No result here
+would, by the design spec's own real-host number, be prohibitive at that scale. No result here
 contradicted the hypothesis; the two things worth flagging are that wall time alone cannot see
 the plain-data curve at this range (thunks/bytes can, and the fix was to report those instead)
 and that laziness across independent host thunks holds even under the module system -- the

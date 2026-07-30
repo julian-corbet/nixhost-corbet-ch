@@ -1,6 +1,6 @@
 # A genuine cross-host assertion over the plain-data tree: no two hosts share a LAN address; no
 # two hosts share a disk by-id. This is the "arithmetic nothing else does today" nixhost's own
-# README promises, exercised at estate scale rather than the two-or-three-fixture size
+# README promises, exercised at scale rather than the two-or-three-fixture size
 # `../../../checks/default.nix` proves the real module's assertions at.
 #
 # Deliberately keyed-dedup (`acc // { ${k} = ...; }` over a fold), not a pairwise

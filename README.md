@@ -36,6 +36,9 @@ nixhost = {
     backend  = "nixos";                         # nixos | system-manager | nix-darwin
     flavour  = "appliance";                     # free-form, example only — your own tag
     provider = "metal";                         # free-form, example only — metal | lxc | gce | ...
+    class    = "standard";                      # capability tier, free-form. FACT ONLY —
+    role     = "proxy";                         # what it's for, free-form.    nothing here
+                                                #   derives from either; see below.
   };
 
   # LEVEL 1 — the machine itself.
@@ -118,6 +121,13 @@ never one without the other, since an assertion test that cannot fail is worthle
   one-way fact table and becomes a policy engine with an opinion. Enums and quantities go in;
   nothing computed from them is allowed to live here.
 
+  `stance.class` and `stance.role` are where this bites hardest, because they are the two fields
+  a consumer most wants to branch on. They are declared here and derived *nowhere* here: the
+  domain that owns the knob owns the derivation. A memory subsystem decides what a capability
+  tier implies for swap sizing; a storage domain decides what it implies for a scrub cadence.
+  Declaring them once is what stops each of those domains growing its own per-host table that
+  drifts silently, because nothing compares them.
+
 ## The cross-host half: `lib.assertHosts`
 
 Everything the module does validates ONE host against itself. `lib.assertHosts` — a plain
@@ -151,7 +161,7 @@ and never `pkgs`, `systemd`, or any NixOS-only integration. A Mac under nix-darw
 real a CPU arch, RAM total, and set of environments standing on it as a bare-metal NixOS server
 does, and none of that is a NixOS-specific concept — the same reasoning
 [nixid](https://github.com/julian-corbet/nixid-corbet-ch)'s own `modules/posix.nix` already
-established for an estate-wide identity table. See `checks/default.nix`'s backend-parity tests for
+established for a cross-host identity table. See `checks/default.nix`'s backend-parity tests for
 the CI proof covering NixOS and system-manager; the `nix-darwin` alias itself is offered on the
 strength of the same reasoning but is not yet backed by a check — see
 [`experiments/README.md`](experiments/README.md#001--is-darwinmodulesnixhost-actually-usable-or-just-a-plausible-looking-alias).

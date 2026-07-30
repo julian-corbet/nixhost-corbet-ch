@@ -122,7 +122,7 @@ let
 
     (check "hosts/distinct-facts-silent"
       distinct.ok
-      "an estate where every disk and address is unique reported violations: ${distinct.message}")
+      "a set of hosts where every disk and address is unique reported violations: ${distinct.message}")
 
     (check "hosts/two-empty-hosts-silent"
       bothEmpty.ok

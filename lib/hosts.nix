@@ -60,7 +60,7 @@
 
 let
   # Keyed dedup in ONE pass, deliberately not a pairwise compare: a cross-host check written O(n^2)
-  # measures its own algorithm rather than the estate, and past 100 hosts that stops being academic.
+  # measures its own algorithm rather than the hosts, and past 100 hosts that stops being academic.
   # fact value -> [ every slug claiming it ]
   claimants = extract: hosts:
     lib.foldl'
