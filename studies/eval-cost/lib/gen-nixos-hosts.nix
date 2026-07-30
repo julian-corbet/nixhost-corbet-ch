@@ -5,7 +5,7 @@
 # real host could be while still being a real NixOS module-system evaluation, per the design
 # spec's own instruction ("use a minimal nixosSystem so this is honest about what it measures").
 #
-# It is NOT a floor on real-world cost, and this file must not be read as one: an actual fleet
+# It is NOT a floor on real-world cost, and this file must not be read as one: an actual estate
 # host also imports nixk3s/nixgpu/nixstorage/nixboot/... and dozens of enabled services, each
 # contributing its own option surface on top of what this fixture pays for. See README.md for
 # why the gap between what this measures and the design spec's own 95.1s/host figure is exactly

@@ -118,11 +118,11 @@ never one without the other, since an assertion test that cannot fail is worthle
   one-way fact table and becomes a policy engine with an opinion. Enums and quantities go in;
   nothing computed from them is allowed to live here.
 
-## The cross-host half: `lib.assertFleet`
+## The cross-host half: `lib.assertHosts`
 
-Everything the module does validates ONE host against itself. `lib.assertFleet` — a plain
+Everything the module does validates ONE host against itself. `lib.assertHosts` — a plain
 function, not a module — validates hosts against each other, because **per-host validity is not
-fleet validity**: two hosts can each be correct by every assertion either one is able to make
+validity across hosts**: two hosts can each be correct by every assertion either one is able to make
 about itself while both claim the same physical disk by-id. Both builds pass. Both hosts then
 write that disk. No module can catch it, because from inside either host nothing is wrong.
 
@@ -137,9 +137,9 @@ module already does:
 
 It takes **plain data**, never evaluated configurations, and `studies/eval-cost/` measured why:
 reading every host's facts through the module system is the one read shape that goes nonlinear,
-putting a 100-host fleet-wide assertion at roughly 2.6 hours against ~0.05 s for the same
+putting a 100-host cross-host assertion at roughly 2.6 hours against ~0.05 s for the same
 assertion over plain data. Every field in the tree is optional, so a partially-described host
-produces zero violations rather than an error — a fleet check that crashes on an incomplete host
+produces zero violations rather than an error — a cross-host check that crashes on an incomplete host
 cannot be adopted one host at a time.
 
 ## Three backends, one file
@@ -151,7 +151,7 @@ and never `pkgs`, `systemd`, or any NixOS-only integration. A Mac under nix-darw
 real a CPU arch, RAM total, and set of environments standing on it as a bare-metal NixOS server
 does, and none of that is a NixOS-specific concept — the same reasoning
 [nixid](https://github.com/julian-corbet/nixid-corbet-ch)'s own `modules/posix.nix` already
-established for a fleet-wide identity table. See `checks/default.nix`'s backend-parity tests for
+established for an estate-wide identity table. See `checks/default.nix`'s backend-parity tests for
 the CI proof covering NixOS and system-manager; the `nix-darwin` alias itself is offered on the
 strength of the same reasoning but is not yet backed by a check — see
 [`experiments/README.md`](experiments/README.md#001--is-darwinmodulesnixhost-actually-usable-or-just-a-plausible-looking-alias).

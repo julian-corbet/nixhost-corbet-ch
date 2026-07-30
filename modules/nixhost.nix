@@ -54,16 +54,16 @@
 #   becomes a policy engine with an opinion. Enums and quantities go in; nothing computed from
 #   them is allowed to live here.
 #
-# ── ONE HOST HERE; MANY HOSTS IN `lib/fleet.nix` ─────────────────────────────────────────────
+# ── ONE HOST HERE; MANY HOSTS IN `lib/hosts.nix` ───────────────────────────────────────────
 #
 # This module is imported once PER HOST, by that host's own configuration, and every assertion
 # below validates that host against ITSELF. The cross-host half is deliberately not a module at
-# all: `lib.assertFleet` is a plain function over plain data, because per-host validity is not
-# fleet validity -- two hosts can each be correct by every assertion either one is able to make
+# all: `lib.assertHosts` is a plain function over plain data, because per-host validity is not
+# validity across hosts -- two hosts can each be correct by every assertion either one is able to make
 # about itself while both claim the same physical disk. Nothing here can see that; the fact that
 # makes it wrong lives in the other host's configuration.
 #
-# The split is also a cost boundary, measured in `studies/eval-cost/`: a fleet-WIDE read through
+# The split is also a cost boundary, measured in `studies/eval-cost/`: a cross-host read through
 # the module system is the one read shape that goes nonlinear (~2.6 h at 100 hosts against
 # ~0.05 s for the same assertion over plain data), so the cross-host checks must never reach
 # into another host's `config`.
@@ -288,7 +288,7 @@ let
     (_: claims: length claims > 1 && any (c: c.access == "exclusive") claims)
     gpuClaimsByDevice;
 
-  # `x86_64-v1`..`-v4` are the real psABI microarchitecture levels this fleet's own CachyOS
+  # `x86_64-v1`..`-v4` are the real psABI microarchitecture levels this estate's own CachyOS
   # kernel package names carry (`linux-cachyos-…-x86_64-v3`); an aarch64-family string here
   # (`armv8.2-a`, a bare `arm`/`aarch64` prefix) is the mirror-image mistake. Vendor-specific
   # names that classify as neither (`apple-m1`, `neoverse-n1`, `cortex-a76`, `bore` -- which is

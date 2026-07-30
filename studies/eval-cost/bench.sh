@@ -5,8 +5,8 @@
 # mislead), the four cases the study brief asks for:
 #
 #   1. plain-data tree: read ONE fact from ONE host, at N = 1, 10, 50, 100, 250
-#   2. plain-data tree: read one fact from EVERY host (the fleet-wide-assertion shape)
-#   3. plain-data tree: a genuine fleet-wide assertion (no shared IP, no shared disk by-id)
+#   2. plain-data tree: read one fact from EVERY host (the cross-host-assertion shape)
+#   3. plain-data tree: a genuine cross-host assertion (no shared IP, no shared disk by-id)
 #   4. CONTRAST at small N only (1, 3, 5): the same two reads, but sourced from a genuinely
 #      evaluated `lib.nixosSystem` per host instead of plain data
 #
@@ -66,13 +66,13 @@ echo "== plain-data cases (1/2/3), N in ${NS_PLAIN[*]}, ${REPS_PLAIN} reps each 
 for n in "${NS_PLAIN[@]}"; do
   expr1="(import ./lib/gen-plain-hosts.nix { n = ${n}; }).host0.ram.totalMiB"
   expr2="builtins.foldl' (a: h: a + h.ram.totalMiB) 0 (builtins.attrValues (import ./lib/gen-plain-hosts.nix { n = ${n}; }))"
-  expr3="(import ./lib/fleet-assert.nix { hosts = import ./lib/gen-plain-hosts.nix { n = ${n}; }; }).ok"
+  expr3="(import ./lib/cross-host-assert.nix { hosts = import ./lib/gen-plain-hosts.nix { n = ${n}; }; }).ok"
 
   for rep in $(seq 1 "$REPS_PLAIN"); do
     echo "  n=${n} rep=${rep}/${REPS_PLAIN}"
     run_one "1-plain-one-fact-one-host"   "$n" "$rep" no "$expr1"
     run_one "2-plain-one-fact-every-host" "$n" "$rep" no "$expr2"
-    run_one "3-plain-fleet-assert"        "$n" "$rep" no "$expr3"
+    run_one "3-plain-cross-host-assert"        "$n" "$rep" no "$expr3"
   done
 done
 
@@ -88,20 +88,20 @@ for n in "${NS_NIXOS[@]}"; do
   done
 done
 
-echo "== correctness check: fleet-assert fires in BOTH directions (not timed) =="
+echo "== correctness check: cross-host-assert fires in BOTH directions (not timed) =="
 {
   echo "-- plain data, n=100, no collide -> expect ok=true --"
   nix eval --impure --json --expr \
-    '(import ./lib/fleet-assert.nix { hosts = import ./lib/gen-plain-hosts.nix { n = 100; }; }).ok'
+    '(import ./lib/cross-host-assert.nix { hosts = import ./lib/gen-plain-hosts.nix { n = 100; }; }).ok'
   echo "-- plain data, n=100, collide=ip -> expect ok=false, ipDuplicates=[\"192.168.42.1\"] --"
   nix eval --impure --json --expr \
-    '(import ./lib/fleet-assert.nix { hosts = import ./lib/gen-plain-hosts.nix { n = 100; collide = "ip"; }; })'
+    '(import ./lib/cross-host-assert.nix { hosts = import ./lib/gen-plain-hosts.nix { n = 100; collide = "ip"; }; })'
   echo "-- plain data, n=100, collide=disk -> expect ok=false, diskDuplicates=[\"ata-DISK-host0-0\"] --"
   nix eval --impure --json --expr \
-    '(import ./lib/fleet-assert.nix { hosts = import ./lib/gen-plain-hosts.nix { n = 100; collide = "disk"; }; })'
+    '(import ./lib/cross-host-assert.nix { hosts = import ./lib/gen-plain-hosts.nix { n = 100; collide = "disk"; }; })'
   echo "-- nixosSystem-sourced facts, n=3, collide=ip -> expect ok=false --"
   nix eval --impure --json --expr \
-    'let hosts = builtins.mapAttrs (_: v: v.config.myFacts) (import ./lib/gen-nixos-hosts.nix { n = 3; collide = "ip"; }); in (import ./lib/fleet-assert.nix { inherit hosts; })'
+    'let hosts = builtins.mapAttrs (_: v: v.config.myFacts) (import ./lib/gen-nixos-hosts.nix { n = 3; collide = "ip"; }); in (import ./lib/cross-host-assert.nix { inherit hosts; })'
 } | tee "${RAW_DIR}/correctness-check.txt"
 
 echo

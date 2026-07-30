@@ -30,7 +30,7 @@ the exact same reasoning the other pure-data repos in this family offer for the 
 
 **Method sketch:** add `nix-darwin` as a `checks`-only input, build a minimal
 `darwinConfiguration` composing `darwinModules.nixhost` with a small fixture (the Mac from the
-family's own fleet is the natural real-world case: `aarch64`, no GPU, no `environments` at all),
+estate's own hosts are the natural real-world case: `aarch64`, no GPU, no `environments` at all),
 and add it to the backend-parity checks alongside the existing NixOS/system-manager pair.
 
 **Status:** open.
@@ -105,8 +105,8 @@ transport-specific glue beyond ordinary flake output composition.
 ## 005 — untested at anything near a real multi-environment host's actual scale
 
 **Question:** every fixture in `checks/default.nix` declares at most two environments and two
-GPUs. fileserver alone (per the family's own fleet facts) runs k3s plus podman plus the
-desktop's own bare-metal GPU use simultaneously, and a larger fleet member could plausibly stack
+GPUs. fileserver alone (per the estate's own host facts) runs k3s plus podman plus the
+desktop's own bare-metal GPU use simultaneously, and a larger host could plausibly stack
 more environments than that. Nothing here measures `nix flake check`'s eval time, or whether the
 generated assertion MESSAGES stay legible, against a host with, say, ten declared environments
 and several GPUs.

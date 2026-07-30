@@ -43,14 +43,14 @@
       # ---------------------------------------------------------------
       # The CROSS-HOST half, and deliberately a plain function rather than a module.
       #
-      # Everything above validates one host against itself. `lib.assertFleet` validates hosts
-      # against each other -- and per-host validity is not fleet validity: two hosts can each be
+      # Everything above validates one host against itself. `lib.assertHosts` validates hosts
+      # against each other -- and per-host validity is not validity across hosts: two hosts can each be
       # correct by every assertion either can make about itself while both claim the same physical
       # disk. No module can catch that, because from inside either host nothing is wrong.
       #
       # It is a function over PLAIN DATA, never over evaluated configurations, and this repo
       # measured why (`studies/eval-cost/`): reading every host's facts through the module system
-      # is the one read shape that goes nonlinear, putting a 100-host fleet-wide assertion at
+      # is the one read shape that goes nonlinear, putting a 100-host cross-host assertion at
       # roughly 2.6 hours against ~0.05 s for the same assertion over plain data.
       #
       # The VALUES it checks are not here and never will be -- this repo is public. The tree is
@@ -58,7 +58,7 @@
       # imports it.
       # ---------------------------------------------------------------
       lib = {
-        assertFleet = (import ./lib/fleet.nix { inherit lib; }).assertFleet;
+        assertHosts = (import ./lib/hosts.nix { inherit lib; }).assertHosts;
       };
 
       checks = forAllSystems (system:
@@ -67,7 +67,7 @@
           inherit lib nixpkgs system;
           nixhostModule = self.nixosModules.nixhost;
           systemManagerLib = system-manager.lib;
-          assertFleet = self.lib.assertFleet;
+          assertHosts = self.lib.assertHosts;
         });
 
       formatter = forAllSystems (system: (pkgsFor system).nixpkgs-fmt);

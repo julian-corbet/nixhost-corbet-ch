@@ -1,10 +1,10 @@
-# A genuine fleet-wide assertion over the plain-data tree: no two hosts share a LAN address; no
+# A genuine cross-host assertion over the plain-data tree: no two hosts share a LAN address; no
 # two hosts share a disk by-id. This is the "arithmetic nothing else does today" nixhost's own
-# README promises, exercised at fleet scale rather than the two-or-three-fixture size
+# README promises, exercised at estate scale rather than the two-or-three-fixture size
 # `../../../checks/default.nix` proves the real module's assertions at.
 #
 # Deliberately keyed-dedup (`acc // { ${k} = ...; }` over a fold), not a pairwise
-# `lib.lists.unique`-style O(n^2) compare -- the point of this study is fleet-EVAL cost, and an
+# `lib.lists.unique`-style O(n^2) compare -- the point of this study is cross-host-eval cost, and an
 # assertion written the slow way would measure its own algorithm, not the cost this study is
 # actually after (the same reasoning nixhost's own RAM/CPU oversubscription checks already apply
 # by summing claimants once rather than comparing every pair).

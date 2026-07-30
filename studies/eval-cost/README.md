@@ -6,14 +6,14 @@ The design spec (`../../nixhost-spec.md`) states a hard rule off the back of one
     importing a plain-data .nix file              :   0.021 s
 
 and forbids `hosts.<name> = <evaluated nixosSystem.config>` in favour of `hosts.<name> = <a
-plain attrset of facts>`, on the reasoning that a fleet-wide assertion over 100 evaluated hosts
+plain attrset of facts>`, on the reasoning that a cross-host assertion over 100 evaluated hosts
 costs "~2.6 hours" (100 x 95.1s = 9,510s = 2.64h -- that arithmetic is exact, and this study did
 not need to re-derive it; what it needed to check is whether the *plain-data* side of the claim
 actually holds up to N=250, and whether the *evaluated-config* side generalizes beyond N=1).
 
 **Answer: yes, and yes -- with two honest caveats below.** Plain data stays flat, in wall
 time, cpuTime, thunks-forced, and bytes-allocated, all the way to N=250 hosts and a genuine
-two-field fleet-wide assertion. Evaluated-per-host config costs order-of-magnitude more even at
+two-field cross-host assertion. Evaluated-per-host config costs order-of-magnitude more even at
 N=1, and the *specific* case that turns catastrophic is reading a fact from *every* host, not
 merely having N hosts around as evaluated config -- see "the nuance" below.
 
@@ -25,8 +25,8 @@ Run `./bench.sh` (from this directory). It:
    100, 250, and measures three read shapes, 7 repetitions each:
    - **case 1** -- read one fact (`ram.totalMiB`) from one host (`host0`)
    - **case 2** -- read that same fact from *every* host (sum via `foldl'`) -- the
-     fleet-wide-assertion shape
-   - **case 3** -- a genuine fleet-wide assertion (`lib/fleet-assert.nix`): no two hosts share a
+     cross-host-assertion shape
+   - **case 3** -- a genuine cross-host assertion (`lib/cross-host-assert.nix`): no two hosts share a
      LAN address; no two share a disk by-id. Proven to fire in **both directions** (violated ->
      error data returned; satisfied -> silent `ok = true`) -- see "Correctness, not just cost"
      below; a benchmark of an assertion that can't be shown to actually assert is worthless.
@@ -60,11 +60,11 @@ Ultra 7 258V laptop (mobile chip, see "limitations" below), Determinate Nix 3.18
 | 2 - plain, one fact, every host | 50 | 0.0396 | 0.0304-0.0584 | 0.0091 | 308 | 62,032 |
 | 2 - plain, one fact, every host | 100 | 0.0290 | 0.0226-0.0305 | 0.0108 | 608 | 96,480 |
 | 2 - plain, one fact, every host | 250 | 0.0228 | 0.0207-0.0299 | 0.0098 | 1,508 | 161,808 |
-| 3 - plain, fleet-wide assertion | 1 | 0.0431 | 0.0371-0.0550 | 0.0126 | 48 | 38,400 |
-| 3 - plain, fleet-wide assertion | 10 | 0.0493 | 0.0404-0.0642 | 0.0108 | 255 | 53,264 |
-| 3 - plain, fleet-wide assertion | 50 | 0.0488 | 0.0336-0.0590 | 0.0095 | 1,175 | 125,040 |
-| 3 - plain, fleet-wide assertion | 100 | 0.0298 | 0.0232-0.0330 | 0.0119 | 2,325 | 218,320 |
-| 3 - plain, fleet-wide assertion | 250 | 0.0286 | 0.0251-0.0297 | 0.0116 | 5,775 | 543,424 |
+| 3 - plain, cross-host assertion | 1 | 0.0431 | 0.0371-0.0550 | 0.0126 | 48 | 38,400 |
+| 3 - plain, cross-host assertion | 10 | 0.0493 | 0.0404-0.0642 | 0.0108 | 255 | 53,264 |
+| 3 - plain, cross-host assertion | 50 | 0.0488 | 0.0336-0.0590 | 0.0095 | 1,175 | 125,040 |
+| 3 - plain, cross-host assertion | 100 | 0.0298 | 0.0232-0.0330 | 0.0119 | 2,325 | 218,320 |
+| 3 - plain, cross-host assertion | 250 | 0.0286 | 0.0251-0.0297 | 0.0116 | 5,775 | 543,424 |
 | 4a - nixosSystem, one fact, one host | 1 | 0.7394 | 0.7213-0.8006 | 0.6085 | 843,702 | 90,225,760 |
 | 4a - nixosSystem, one fact, one host | 3 | 1.2343 | 0.8058-1.4188 | 0.7950 | 843,706 | 90,225,760 |
 | 4a - nixosSystem, one fact, one host | 5 | 1.2882 | 0.9931-1.3578 | 0.8790 | 843,710 | 90,225,760 |
@@ -82,7 +82,7 @@ noisier on this machine between the two runs.)
 
 **Plain data does not degrade at 250 -- confirmed, not assumed.** Wall time for all three
 plain-data cases stays inside a ~0.02-0.05s band from N=1 to N=250, including case 3's genuine
-two-field fleet-wide assertion at N=250. That is the honest headline the task asked for: *if*
+two-field cross-host assertion at N=250. That is the honest headline the task asked for: *if*
 plain data had also degraded badly at 250, that would have been the more interesting finding;
 it does not, so the design spec's hard rule is measured, not merely argued, at the top of its
 stated range.
@@ -100,7 +100,7 @@ with N the whole way:
   host beyond `host0`; the other 249 hosts' *inner* fields are never forced.
 - case 2 (read every host): ~6.0 thunks/host -- each host's `ram` attrset genuinely gets
   entered and its one field forced.
-- case 3 (fleet assertion, two fields, two accumulator dicts): ~23.0 thunks/host -- reads two
+- case 3 (cross-host assertion, two fields, two accumulator dicts): ~23.0 thunks/host -- reads two
   fields per host and appends into two claims-dicts, so costs roughly 3-4x case 2 per host, and
   is still ~5,775 thunks / ~543KB total at N=250. Nothing here is close to a concerning
   threshold; it is single-digit-microseconds-per-host territory being drowned out by a
@@ -115,9 +115,9 @@ moves with N and is what the table reports; `gc.heapSize` is included in the raw
 completeness but is not evidence of anything at this scale.
 
 **Evaluated-per-host config costs orders of magnitude more even at N=1 -- before any
-fleet-wide multiplication.** `4a`/`4b` at N=1 already cost ~0.61s cpuTime / ~0.74-0.76s wall
+cross-host multiplication.** `4a`/`4b` at N=1 already cost ~0.61s cpuTime / ~0.74-0.76s wall
 and 843,702 thunks -- roughly **146x the thunks** and **~27x the wall time (~52x the cpuTime)**
-of the *most expensive* plain-data case (`3`, the genuine fleet-wide assertion) at its largest
+of the *most expensive* plain-data case (`3`, the genuine cross-host assertion) at its largest
 tested N=250. This is the fixed cost of evaluating nixpkgs's own stock module list once (~400
 modules, boot/systemd/users/networking/... all present in this fixture purely because
 `lib.nixosSystem` always imports them, whether or not the caller's own config uses any of it)
@@ -146,23 +146,23 @@ with N (843,705 thunks at N=1 -> 2,502,971 at N=3 -> 4,162,237 at N=5; cpuTime 0
 once each.
 
 So the design spec's own "FORBIDDEN" framing is correct for the case that actually matters --
-a **fleet-wide** read/assertion, exactly the thing `nixhost`'s whole reason to exist is to make
+a **cross-host** read/assertion, exactly the thing `nixhost`'s whole reason to exist is to make
 affordable (level-1/level-2 arithmetic checks, cross-host references) -- but it is not that
 *merely having* N hosts as evaluated config is catastrophic; it's that the one operation you
 will actually want to run (touch every host once) is the one that multiplies the per-host cost
 by N. A design that only ever read one host at a time from evaluated config would not show
-this blowup; a design whose entire point is fleet-wide assertions cannot avoid it. That is a
-sharper, not a weaker, argument for the plain-data rule, because fleet-wide assertions are
+this blowup; a design whose entire point is cross-host assertions cannot avoid it. That is a
+sharper, not a weaker, argument for the plain-data rule, because cross-host assertions are
 precisely what `nixhost` is *for*.
 
 ## Extrapolating to N=100 and N=250
 
 **Plain data: measured, not extrapolated, and stays affordable.** Case 3 (the heaviest
-plain-data case, the genuine two-field fleet-wide assertion) measured directly at N=100
+plain-data case, the genuine two-field cross-host assertion) measured directly at N=100
 (~0.033s wall, 2,325 thunks, 218KB) and N=250 (~0.034s wall, 5,775 thunks, 543KB). There is
 nothing to extrapolate -- the curve simply has not bent yet, and the thunk/byte counts say it
 will not bend for a very long time past 250: even a naive linear projection from the ~23
-thunks/host marginal cost puts a synthetic 100,000-host fleet at ~2.3M thunks -- still a
+thunks/host marginal cost puts a synthetic 100,000 hosts at ~2.3M thunks -- still a
 fraction of what ONE trivial nixosSystem host alone costs in this study (843,702 thunks).
 
 **nixosSystem contrast: extrapolated from only 3 points, flagged as such, and this fixture is
@@ -191,7 +191,7 @@ against a REAL host configuration, not this study's trivial one:
 The ~370x gap between this study's own floor and the design spec's real-host figure is
 *exactly* the "a trivial config understates real cost" caveat the task required flagging, not a
 discrepancy between two measurements of the same thing. This study's fixture imports nixpkgs's
-stock module list and nothing else; a real fleet host (per the family's own conventions)
+stock module list and nothing else; an actual estate host (per the family's own conventions)
 additionally imports nixk3s, nixgpu, nixstorage, nixboot, nixarch, home-manager, and dozens of
 enabled services, each contributing its own option surface, assertions, and (for anything using
 `types.submodule`) its own nested `evalModules` call on top of the ~0.6-0.8s floor measured
@@ -199,13 +199,13 @@ here. This study did not attempt to reproduce a real host's full configuration (
 require importing several sibling nix* flakes, which house rule 1 forbids for `nixhost` itself
 and which this study -- being a study, not the module -- has no license to do either); the
 95.1s figure is taken as given, and this study's own measurement independently confirms the
-*mechanism* (full-fixpoint cost scaling with fleet-wide reads) that number is evidence of,
+*mechanism* (full-fixpoint cost scaling with cross-host reads) that number is evidence of,
 without re-measuring that exact number.
 
 ## Correctness, not just cost
 
 A cost measurement of an assertion that cannot be shown to actually assert is worthless (house
-rule 6). `bench.sh`'s final section runs, un-timed, both directions of `fleet-assert.nix` against
+rule 6). `bench.sh`'s final section runs, un-timed, both directions of `cross-host-assert.nix` against
 both plain data and nixosSystem-sourced facts:
 
 - plain data, N=100, no collision -> `ok: true` (silent when satisfied)
@@ -233,7 +233,7 @@ Full transcript: `results/raw/correctness-check.txt`.
   engine counters, not wall time -- reproduced **byte-for-byte identically** across both runs.
   That is the concrete case for the earlier claim that wall time is the wrong instrument here:
   absolute wall-clock numbers should be read as "this machine, this session, this run"; the
-  engine counters and the overall shape (flat for plain data, linear-or-worse for fleet-wide
+  engine counters and the overall shape (flat for plain data, linear-or-worse for cross-host
   evaluated-config reads) are what actually reproduce and are the load-bearing claims.
 - **Every reported statistic uses all 5 (nixosSystem) or 7 (plain-data) repetitions, including
   whichever one happened to be slowest** -- no outlier trimming. If anything this makes the
@@ -260,15 +260,15 @@ Full transcript: `results/raw/correctness-check.txt`.
 
 The design spec's hard rule -- fact tree as plain data, never evaluated config -- is confirmed,
 not merely re-argued, up to N=250: plain data's cost (thunks, bytes, wall time) stays flat and
-negligible across every read shape tested, including a genuine two-field fleet-wide assertion,
+negligible across every read shape tested, including a genuine two-field cross-host assertion,
 while a fully evaluated NixOS module system costs orders of magnitude more even at N=1 for a
-single host, and specifically the fleet-wide-read shape (read one fact from every host) -- the
+single host, and specifically the cross-host-read shape (read one fact from every host) -- the
 shape `nixhost`'s own five assertion groups all use -- scales that already-large per-host cost
 by N with no sign of a ceiling before the design spec's own quoted 100-host / 2.6-hour figure.
-Fleet-wide assertions over plain data remain affordable well past 250 hosts on the evidence
+Cross-host assertions over plain data remain affordable well past 250 hosts on the evidence
 gathered here; the same assertions over evaluated per-host config were expensive from N=1 and
-would, by the design spec's own real-host number, be prohibitive at fleet scale. No result here
+would, by the design spec's own real-host number, be prohibitive at estate scale. No result here
 contradicted the hypothesis; the two things worth flagging are that wall time alone cannot see
 the plain-data curve at this range (thunks/bytes can, and the fix was to report those instead)
 and that laziness across independent host thunks holds even under the module system -- the
-danger is specifically the fleet-wide read, not the mere existence of N evaluated hosts.
+danger is specifically the cross-host read, not the mere existence of N evaluated hosts.

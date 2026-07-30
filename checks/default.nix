@@ -29,7 +29,7 @@
 #
 # Plus backend parity (NixOS vs. system-manager agree on the same fixtures) and the shipped
 # `examples/host` evaluating cleanly on its own.
-{ pkgs, lib, nixpkgs, system, nixhostModule, systemManagerLib, assertFleet }:
+{ pkgs, lib, nixpkgs, system, nixhostModule, systemManagerLib, assertHosts }:
 
 let
   evalNixos = extraConfig:
@@ -419,13 +419,13 @@ let
       "the shipped generic example (examples/host) failed to evaluate -- it is meant to be internally consistent by construction")
   ];
 
-  # The CROSS-HOST group: `lib/fleet.nix`, which implements only the checks a per-host module
+  # The CROSS-HOST group: `lib/hosts.nix`, which implements only the checks a per-host module
   # cannot make. Kept in its own file because it needs no NixOS evaluation at all -- it is a plain
   # function over plain data, which is the whole reason it exists (see that file's header for the
   # measured cost of the alternative).
-  fleetResults = import ./fleet.nix { inherit lib assertFleet; };
+  hostsResults = import ./hosts.nix { inherit lib assertHosts; };
 
-  results = moduleResults ++ backendParityChecks ++ exampleResults ++ fleetResults;
+  results = moduleResults ++ backendParityChecks ++ exampleResults ++ hostsResults;
 
   failed = builtins.filter (r: !r.ok) results;
 

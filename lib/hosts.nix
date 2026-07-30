@@ -1,11 +1,11 @@
-# lib/fleet.nix -- `lib.assertFleet`
+# lib/hosts.nix -- `lib.assertHosts`
 #
 # THE CROSS-HOST LAYER, and deliberately nothing else. `modules/nixhost.nix` already validates one
 # host against itself -- RAM and CPU oversubscription, GPU exclusivity, arch/microarch agreement --
 # and none of that is repeated here. This file implements only the checks a per-host module
 # CANNOT make, which is a much shorter list than it first appears.
 #
-# ── PER-HOST VALIDITY IS NOT FLEET VALIDITY. This is the entire argument. ─────────────────────
+# ── PER-HOST VALIDITY IS NOT VALIDITY ACROSS HOSTS. This is the entire argument. ───────────────
 #
 # Two hosts can each declare a configuration that is correct by every assertion either one is able
 # to make about itself, while both claim the SAME physical disk by-id. Both builds pass. Both hosts
@@ -26,14 +26,14 @@
 # host's whole evaluation. Measured for this repo (`studies/eval-cost/`, N = 1..250, 7 reps,
 # `NIX_SHOW_STATS` per run):
 #
-#     plain-data tree, incl. a genuine fleet-wide assertion : ~0.02-0.05 s wall, FLAT to N=250
+#     plain-data tree, incl. a genuine cross-host assertion : ~0.02-0.05 s wall, FLAT to N=250
 #     ONE host's fact among N evaluated hosts               : also flat -- laziness does hold here
 #     EVERY host's fact, i.e. exactly this file's job       : the nonlinear case
 #
 # The third row is why this is a function and not a module. A single cross-host lookup survives the
-# module system; a fleet-WIDE read does not. A deliberately trivial fixture already costs ~0.6 s
+# module system; a cross-host read does not. A deliberately trivial fixture already costs ~0.6 s
 # cpuTime and ~843,700 thunks at N=1 (146x the thunks of the heaviest plain-data case at N=250),
-# and a real fully-loaded host config measures 95.1 s -- putting a 100-host fleet-wide assertion at
+# and a real fully-loaded host config measures 95.1 s -- putting a 100-host cross-host assertion at
 # roughly 2.6 HOURS against ~0.05 s for the same assertion over plain data. This is the wall NixOps
 # hit and that colmena and deploy-rs deliberately walked away from.
 #
@@ -52,15 +52,15 @@
 #
 # EVERY field is optional, and that is a deliberate adoption property rather than laxity: a tree
 # containing a host that declares only a slug must produce zero violations, not an evaluation
-# error. A fleet check that crashes on a partially-described host cannot be adopted one host at a
+# error. A cross-host check that crashes on a partially-described host cannot be adopted one host at a
 # time, which means it is a check nobody adopts. It also lets the tree describe hosts that have no
 # NixOS module at all -- a laptop, a router, an appliance -- which is precisely where a duplicated
 # address is most likely to come from.
 { lib }:
 
 let
-  # Keyed dedup in ONE pass, deliberately not a pairwise compare: a fleet check written O(n^2)
-  # measures its own algorithm rather than the fleet, and past 100 hosts that stops being academic.
+  # Keyed dedup in ONE pass, deliberately not a pairwise compare: a cross-host check written O(n^2)
+  # measures its own algorithm rather than the estate, and past 100 hosts that stops being academic.
   # fact value -> [ every slug claiming it ]
   claimants = extract: hosts:
     lib.foldl'
@@ -104,8 +104,8 @@ let
 in
 {
   # Returns `{ ok; violations; message; }` rather than throwing, so a caller renders the whole list
-  # at once instead of repairing the fleet one aborted evaluation at a time.
-  assertFleet = { hosts }:
+  # at once instead of repairing the hosts one aborted evaluation at a time.
+  assertHosts = { hosts }:
     let
       violations =
         contestedFacts hosts "disk-claimed-once" disksOf
