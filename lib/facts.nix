@@ -104,21 +104,41 @@ rec {
   #   config     -- the attrset to read from (a real NixOS/system-manager/nix-darwin `config`, or
   #                 plain data in a test -- this function touches nothing module-system-specific,
   #                 only `?` and ordinary attribute access, so either works identically).
-  #   namespace  -- the OWNER: the attribute path whose presence means "the module that declares
-  #                 this fact is composed here". A single name (`"nixcpu"`) where a repo ships one
-  #                 module, or a path -- list or dotted string -- where it ships several under one
-  #                 namespace (`"nixiam.posix"`, `[ "nixstorage" "delivery" ]`). Put the boundary
-  #                 at the MODULE, not at the repo: a host can compose an identity repo's lldap
-  #                 module and not its posix module, and probing the bare namespace then reports
-  #                 "the fact was renamed" about a host that simply never imported it.
+  #   namespace  -- the OWNER. ⚠ ONLY ITS FIRST SEGMENT IS THE PRESENCE TEST. A dotted or list
+  #                 spelling (`"nixiam.posix"`, `[ "nixstorage" "delivery" ]`) is accepted for
+  #                 readability, but every segment past the first is folded into `path` before use,
+  #                 and the composed-test is `config ? <first segment>` and nothing deeper. See the
+  #                 implementation comment at the split, which explains why: the presence question
+  #                 is "is the sibling REPO composed", and only a top-level attribute can answer it
+  #                 without collapsing back into the very defect this file exists to remove.
   #
-  #                 KNOWN LIMIT, stated rather than hidden: a rename of the owner's own deepest
-  #                 segment (`nixiam.posix` -> `nixiam.unix`) is indistinguishable from "posix was
-  #                 never composed here" -- both leave nothing at that path. This function reports
-  #                 absent, i.e. silence, because a partially-composed sibling is the common and
-  #                 legitimate case while an owner rename is caught by the consuming repo's own
-  #                 checks, which compose the real producer. Choose the owner accordingly: deeper
-  #                 buys accuracy about (a) and gives up detection of a rename AT that depth.
+  #                 THIS PARAGRAPH USED TO SAY THE OPPOSITE -- "put the boundary at the MODULE, not
+  #                 at the repo" -- and it was stale from the moment the presence test moved
+  #                 (nixhost 60827e9). It is corrected rather than deleted because the wrong version
+  #                 was load-bearing: two consumer repos independently built workarounds for what
+  #                 they reasonably diagnosed as a probeFact bug, when the behaviour was deliberate
+  #                 and only the documentation was lying.
+  #
+  #                 THE CONSEQUENCE A CALLER MUST PLAN FOR: a PARTIALLY-composed namespace makes
+  #                 every un-composed leaf under it report `unresolved`, not `absent` -- because the
+  #                 first segment exists, so the sibling counts as composed. Probing
+  #                 `nixdesktop.layouts` on a host that composes only `nixdesktop.startup` warns
+  #                 "layouts did not resolve, even though nixdesktop IS composed", which is true and
+  #                 useless. That is not a bug to route around: it is the price of never going
+  #                 silent on a rename, which is the failure that cost this estate weeks.
+  #
+  #                 SO: probe only what you actually consume, and gate the resulting warning behind
+  #                 the option that consumes it. A probe whose value nothing reads should not exist;
+  #                 a probe whose value is read only when an option is set should warn only then.
+  #                 An always-on warning for an optional seam trains operators to ignore warnings,
+  #                 which costs more than the seam is worth.
+  #
+  #                 IRREDUCIBLE LIMIT, stated rather than hidden: renaming the owner's own FIRST
+  #                 segment (`nixiam` -> something else) is indistinguishable from "that repo was
+  #                 never composed here" -- both leave nothing at the top level, and this function
+  #                 reports `absent`, i.e. silence. Nothing in a `config` can tell those apart. The
+  #                 backstop is the consuming repo's own checks, which compose the real producer and
+  #                 carry a rename decoy.
   #   path       -- the leaf's path INSIDE that namespace, as a list (`[ "cores" ]`) or a
   #                 dot-separated string (`"hardware.totalMiB"`) -- both spellings normalise to
   #                 the same list before use, so a caller uses whichever reads better at its own
