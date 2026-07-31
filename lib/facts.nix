@@ -149,31 +149,31 @@ rec {
     assert lib.assertMsg (mode == "warn" || mode == "assert")
       "lib.probeFact: mode must be \"warn\" or \"assert\", got ${builtins.toJSON mode} -- a third, silently-ignored mode would be this same defect class one layer up.";
     let
-      pathList = normalisePath path;
-      ownerList = normaliseOwner namespace;
-      dotted = lib.concatStringsSep "." pathList;
-      ownerDotted = lib.concatStringsSep "." ownerList;
-      # An empty `path` is legitimate and means "the owner IS the fact" -- the shape a consumer needs
-      # when the thing it reads is itself a whole module's single option (`nixstorage.disks`,
-      # `nixdesktop.startup`). Without this branch the message renders a trailing dot.
-      optionPath = if pathList == [ ] then ownerDotted else "${ownerDotted}.${dotted}";
-
-      # STATE (a), decided before anything under the owner is opened -- see this file's header.
+      # The namespace is the TOP-LEVEL attribute and nothing deeper. A dotted `namespace` is
+      # accepted for convenience, but every segment past the first is folded into the path here,
+      # because "is the sibling composed" is a question only the top-level attr can answer.
       #
-      # Wrapped in tryEval for the same reason `attemptLeaf` is. A single-segment owner only ever
-      # did `config ? ns`, which forces nothing. A MULTI-segment owner must force every segment
-      # except the last to WHNF just to test for the next key -- so an intermediate namespace whose
-      # value throws (a mandatory option left unset, a value its own type rejected) would take the
-      # whole evaluation down from inside a probe whose entire purpose is to survive that and
-      # report it. An owner that cannot even be tested for presence is treated as absent, which is
-      # the same conservative answer this function gives everywhere else it cannot see.
-      composedAttempt = builtins.tryEval (lib.hasAttrByPath ownerList config);
-      composed = composedAttempt.success && composedAttempt.value;
+      # This split is load-bearing, and getting it wrong reintroduces the exact defect this file
+      # exists to remove. A caller passing `namespace = "nixstorage.disks"; path = [ ]` makes the
+      # presence test ask whether `disks` exists -- so the moment nixstorage renames it, the test
+      # says "not composed", the probe reports state (a), and it goes SILENT. That is the
+      # conflation the whole design removes, rebuilt inside the thing removing it. Four repos'
+      # rename decoys caught it; without them it would have shipped as a guard that had quietly
+      # stopped guarding.
+      ownerRaw = normaliseOwner namespace;
+      nsAttr = builtins.head ownerRaw;
+      pathList = (builtins.tail ownerRaw) ++ normalisePath path;
+      dotted = lib.concatStringsSep "." pathList;
+      ownerDotted = nsAttr;
+      optionPath = if pathList == [ ] then nsAttr else "${nsAttr}.${dotted}";
+
+      # STATE (a), decided before anything under the namespace is opened -- see this file's header.
+      # A single attribute test forces nothing, so an unadopted sibling costs no evaluation.
+      composed = config ? ${nsAttr};
 
       # Lazy on the `if` itself, not merely inside `attemptLeaf`: when `composed` is false this
-      # binding is never forced, so the owner subtree is never touched at all.
-      attempt =
-        if composed then attemptLeaf pathList (lib.getAttrFromPath ownerList config) else null;
+      # binding is never forced, so the namespace subtree is never touched at all.
+      attempt = if composed then attemptLeaf pathList config.${nsAttr} else null;
 
       resolved = composed && attempt.success;
 

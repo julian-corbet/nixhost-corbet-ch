@@ -521,10 +521,10 @@ let
 
   # NEAREST NON-VIOLATION for the mirror design as a whole: the domains are imported and NOTHING is
   # stated. `nixcpu.arch`/`cores`/`threads` have no default upstream, so each of those mirrors reads
-  # a value the module system would abort on -- and this host must still build, because nothing on it
-  # depends on any of them. This is the test that caught the real bug in an earlier draft: the
-  # `overriddenMirrors` check read `opt.definitions`, which forces every definition's value, so a
-  # host that had declared nothing was told it had declared a fact twice.
+  # a value the module system would abort on -- and this host must still build, because nothing on
+  # it depends on any of them. Guards the exact bug class where `overriddenMirrors`' own
+  # `opt.definitions` read (which forces every definition's value) tells a host that declared
+  # nothing that it declared a fact twice.
   domainsImportedNothingStated = { nixhost = { name = "test-host"; stance.backend = "nixos"; }; };
 
   # NEAREST NON-VIOLATION, and the property that keeps this module adoptable: environments may

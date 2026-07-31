@@ -70,13 +70,10 @@
     # NO `environments` HERE, DELIBERATELY -- see env-*.nix beside this file.
     #
     # `environments` is an ordinary `attrsOf submodule`, so the module system's own merge lets
-    # each tenant be contributed from its OWN module, by whoever owns that tenant. Nothing has to
-    # enumerate the tree in one place, and this example used to anyway -- which made the whole
-    # design read as a central slicing table divided top-down, when the arithmetic underneath is
-    # the opposite: each claim is declared locally and VERIFIED by aggregating upward against the
-    # mirrored ceiling. A file that lists every tenant is a documentation choice, not the shape of
-    # the module, and it was the only thing here that looked like the pattern this design exists
-    # to avoid.
+    # each tenant be contributed from its OWN module, by whoever owns that tenant -- nothing has
+    # to enumerate the tree in one place. Each claim is declared locally and VERIFIED by
+    # aggregating upward against the mirrored ceiling; a central file listing every tenant would
+    # read as a slicing table divided top-down, the opposite of that.
   };
 
   # ── Stubs NixOS demands of any bootable system ───────────────────────────
