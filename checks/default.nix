@@ -20,9 +20,9 @@
 #                            vacuously.
 #
 # Both eval paths matter because the two absences reach the mirror by different routes -- a missing
-# attribute path versus a declared option with no definition -- even though `mirrorOf` deliberately
-# gives them the same answer. Testing only the bare path would leave the route that goes through a
-# throwing default entirely unexercised.
+# attribute path versus a declared option with no definition -- even though `lib.probeFact`
+# deliberately gives them the same answer. Testing only the bare path would leave the route that
+# goes through a throwing default entirely unexercised.
 #
 # The claims worth failing CI over -- one group per assertion this module implements, each
 # proven to FIRE when violated and stay SILENT when satisfied, per this repo's own house rule
@@ -51,10 +51,18 @@
 #      -- the specific regression this group exists for is the opposite, a green build in which the
 #      check compared against nothing -- while a host with no such claim builds fine with no facts
 #      at all, including on a host where the domains are imported and simply say nothing.
+#   8. THE FACT WIRING (`lib.probeFact`, spliced into `config.warnings` as `extraFactWarnings`): a
+#      fully-populated host and a bare one both produce zero warnings; a domain composed with
+#      nothing stated warns exactly once, for the one non-ceiling field (`nixcpu.threads`) that
+#      genuinely has no upstream default; and a domain whose real option surface renamed the exact
+#      path a mirror reads (`nixgpu.stableDevicePaths.devices` -> `nixgpu.inventory`) warns exactly
+#      once, naming the option path, the namespace, and the fallback value in use, WITHOUT failing
+#      the build -- proven through the real `nixhostModule`, not only `lib/facts.nix`'s own
+#      function-level and synthetic-integration fixtures.
 #
 # Plus backend parity (NixOS vs. system-manager agree on the same fixtures) and the shipped
 # `examples/host` evaluating cleanly on its own.
-{ pkgs, lib, nixpkgs, system, nixhostModule, systemManagerLib, assertHosts }:
+{ pkgs, lib, nixpkgs, system, nixhostModule, systemManagerLib, assertHosts, probeFact, collectProbes }:
 
 let
   domainStubs = import ./domain-stubs.nix { inherit lib; };
@@ -506,8 +514,8 @@ let
 
   # The other shape of absence: the domains ARE imported, the facts were simply never stated. The
   # two reach the mirror differently -- nixram's own default is `null`, while nixcpu's `cores` has no
-  # default at all and would abort evaluation if its mirror did not go through `mirrorOf` -- and both
-  # must come out as the same loud assertion. Neither may pass.
+  # default at all and would abort evaluation if its mirror did not go through `lib.probeFact` --
+  # and both must come out as the same loud assertion. Neither may pass.
   ramClaimFactUnstated = { nixhost = { name = "test-host"; stance.backend = "nixos"; environments.a = { kind = "k3s"; resources.ram.limitMiB = 4096; }; }; };
   cpuClaimFactUnstated = { nixhost = { name = "test-host"; stance.backend = "nixos"; environments.a = { kind = "k3s"; resources.cpu.quotaCores = 4; }; }; };
 
@@ -532,6 +540,37 @@ let
       };
     };
   };
+
+  # ── Fact-wiring fixtures: `lib.probeFact` proven THROUGH the real module, not just abstractly ──
+  #
+  # `checks/facts.nix` proves `lib.probeFact` at the function level, and `checks/facts-integration.nix`
+  # proves it against a real NixOS eval of its OWN small stand-in fixtures. Neither ever composes the
+  # real `modules/nixhost.nix` -- the ten actual probe call sites (`archProbe` through `netProbe`) and
+  # the `config.warnings = extraFactWarnings;` line that splices their result into this host's own
+  # build -- so neither proves the WIRING is right. A caller could get any one of those ten calls
+  # backwards (wrong `namespace`, wrong `path`, a probe left out of `extraFactWarnings` entirely) and
+  # every test above this line would stay green. These fixtures close that gap, reusing whatever is
+  # already defined above and adding only the one decoy nothing above provides: a domain whose real
+  # option surface renamed the exact path a mirror reads.
+  #
+  # `nixgpu` genuinely composed (`inventory` exists, and resolves cleanly on its own), but
+  # `stableDevicePaths.devices` -- the path `gpuProbe` still asks for -- is gone: the real shape
+  # `nixstorage.layout`'s own rename produced, reproduced here against `nixgpu` specifically because
+  # its mirror's fallback is an attrset (`{ }`), proving requirement 5 end-to-end as well as the
+  # scalar case `nixcpu.threads` below already covers.
+  nixgpuRenamedStub = { lib, ... }: {
+    options.nixgpu.inventory = lib.mkOption {
+      type = lib.types.attrsOf lib.types.anything;
+      default = { };
+      description = "Stand-in for nixgpu having renamed `stableDevicePaths.devices` to `inventory`.";
+    };
+  };
+
+  nixgpuRenamedHost = { nixhost = { name = "test-host"; stance.backend = "nixos"; }; };
+
+  # Deliberately through `evalNixosWith` directly, never `evalNixos`/`evalNixosBare`: this fixture
+  # composes its OWN, deliberately-renamed nixgpu surface, not `domainStubs`' faithful one.
+  nixgpuRenamedEval = evalNixosWith [ nixgpuRenamedStub nixgpuRenamedHost ];
 
   # ══ Results ════════════════════════════════════════════════════════════════════════════════
 
@@ -786,11 +825,11 @@ let
 
     (check "ceiling/cpu-claim-with-the-fact-unstated-fails-the-build"
       (nixosBuildFails cpuClaimFactUnstated)
-      "nixcpu imported but cores never set must also fail -- and reach nixhost's own assertion rather than aborting out of the option default, which is what `mirrorOf` exists to guarantee")
+      "nixcpu imported but cores never set must also fail -- and reach nixhost's own assertion rather than aborting out of the option default, which is what `lib.probeFact` exists to guarantee")
 
-    # nixcpu declares `arch` with no default, so this fixture is also the one that proves `mirrorOf`
-    # turns that into a `null` this module can reason about: without it the failure would be an abort
-    # from inside an option default, and `archUnresolved` would be unreachable code.
+    # nixcpu declares `arch` with no default, so this fixture is also the one that proves
+    # `lib.probeFact` turns that into a `null` this module can reason about: without it the failure
+    # would be an abort from inside an option default, and `archUnresolved` would be unreachable code.
     (check "ceiling/microarch-without-a-resolved-arch-fails-the-build"
       (nixosBuildFails microarchWithoutArch)
       "a microarch with no arch to check it against must never pass quietly -- the cross-check compares the two, so an unresolved arch would leave it vacuously true")
@@ -857,7 +896,46 @@ let
   # measured cost of the alternative).
   hostsResults = import ./hosts.nix { inherit lib assertHosts; };
 
-  results = moduleResults ++ mirrorResults ++ ceilingResults ++ backendParityChecks ++ exampleResults ++ hostsResults;
+  # The CROSS-NAMESPACE group: `lib/facts.nix`. `factsResults` needs no NixOS evaluation at all
+  # (see that file's own header for why `probeFact` touches nothing module-system-specific), and
+  # `factsIntegrationResults` is the companion that composes it against a real module eval for the
+  # two things a plain-data fixture cannot show: a genuine mandatory-unset option throwing the
+  # module system's own error, and requirement 4 proven against a real, genuinely-unbuildable
+  # `system.build.toplevel` sitting right beside the namespace being probed.
+  factsResults = import ./facts.nix { inherit lib probeFact collectProbes; };
+  factsIntegrationResults = import ./facts-integration.nix { inherit pkgs lib nixpkgs system probeFact; };
+
+  # The THIRD leg of the fact-reporting proof, and the only one that composes the real
+  # `modules/nixhost.nix` -- see the fixtures' own header just above `## Results` for why the other
+  # two are not enough on their own.
+  factWiringResults = [
+    (check "fact-wiring/fully-populated-host-has-no-warnings"
+      ((evalNixos everyMirrorPopulated).warnings == [ ])
+      "a host with every level-1 fact genuinely stated at its owner must produce zero warnings through the real module's own wiring -- any warning here is a false positive in `extraFactWarnings`, not a real defect")
+
+    (check "fact-wiring/no-domains-at-all-has-no-warnings"
+      ((evalNixosBare noDomainsAtAll).warnings == [ ])
+      "state (a), wired through the real module: a host importing none of the five domains must report zero warnings -- absence is silent, not merely non-fatal")
+
+    (check "fact-wiring/domain-composed-nothing-stated-warns-once-for-the-one-mandatory-extra-field"
+      (let w = (evalNixos domainsImportedNothingStated).warnings; in
+        lib.length w == 1 && lib.hasInfix "nixcpu.threads" (lib.head w))
+      "nixcpu composed and nothing stated: arch/cores are ceilings (silent here, since nothing claims RAM/CPU -- see the ceiling group above) and microarch/coreTypes/scheduler resolve cleanly through their own real defaults, but threads has no default upstream either and carries no ceiling to gate an assertion on -- it must be the one and only warning produced, not zero and not more than one")
+
+    (check "fact-wiring/real-rename-of-a-non-ceiling-mirror-warns-through-the-real-module"
+      (let w = nixgpuRenamedEval.warnings; in
+        lib.length w == 1
+        && lib.hasInfix "nixgpu.stableDevicePaths.devices" (lib.head w)
+        && lib.hasInfix "nixgpu" (lib.head w)
+        && lib.hasInfix "{ }" (lib.head w))
+      "the decoy that matters most: nixgpu genuinely composed (as `inventory`, not `stableDevicePaths.devices`) through the REAL nixhostModule -- if `gpuProbe`'s call site ever gets its namespace or path wrong, or drops out of `extraFactWarnings`, this is what stops reporting it. The one warning must name the option path, the namespace, and the fallback (`{ }`) actually in use, per requirement 2")
+
+    (check "fact-wiring/real-rename-of-a-non-ceiling-mirror-does-not-fail-the-build"
+      (!(buildFails nixgpuRenamedEval))
+      "requirement 3: warn is the default. A renamed non-ceiling mirror must never fail the build on its own through the real module's wiring -- only mode = \"assert\" (which this module does not use for these seven) would do that")
+  ];
+
+  results = moduleResults ++ mirrorResults ++ ceilingResults ++ backendParityChecks ++ exampleResults ++ hostsResults ++ factsResults ++ factsIntegrationResults ++ factWiringResults;
 
   failed = builtins.filter (r: !r.ok) results;
 

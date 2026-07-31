@@ -59,9 +59,11 @@
 # repo has to stay usable by someone who has never heard of nixhost (so the dependency can only
 # point this way), and a host has to be able to import nixhost while owning only some of the
 # domains (so the read has to tolerate the domain being absent, resolving to `null`/`{ }` rather
-# than erroring). `mirrorOf` below is that read, and its own comment covers the one case a bare
-# `or` gets wrong -- a domain imported with the fact never stated, which is not the same absence but
-# means the same thing here.
+# than erroring). `lib.probeFact` (`../lib/facts.nix`) below is that read, and its own header
+# covers the two cases a bare `or` gets wrong -- a domain imported with the fact never stated
+# (which is not the same absence as the domain not being imported, but resolves to the same value
+# either way) AND a domain imported with the fact RENAMED out from under this read, which is a
+# genuine defect this module used to have no way to tell apart from either legitimate absence.
 #
 # ── ...and why some of those mirrors need an assertion the others don't ──────────────────────
 #
@@ -159,39 +161,78 @@ let
 
   # ── Reading a fact out of the domain that owns it, without depending on that domain ──────────
   #
-  # Every level-1 mirror's default goes through here. `config.<domain>.<path> or <fallback>` is the
-  # family idiom and does most of the work, but it has ONE hole, and closing it is what this helper
-  # is for: `or` tests whether the attribute PATH exists, and a declared option's path exists the
-  # moment its module is imported, definition or not. So for a domain field with no default upstream
-  # (`nixcpu.arch`, `nixcpu.cores`, `nixcpu.threads` are all required at the owner), `or` does not
-  # return the fallback -- it returns the module system's own throwing thunk, and forcing it aborts
-  # evaluation with "The option `nixcpu.cores' is used but not defined."
+  # Every level-1 mirror's default goes through `lib.probeFact` (`../lib/facts.nix`) now, not a
+  # hand-rolled helper local to this file -- this WAS that helper (`mirrorOf`, a `tryEval`-and-
+  # fall-back one-liner), and it had exactly the gap this repo's own `experiments/003` and
+  # `experiments/008` had already logged: collapsing "the domain is not imported" and "the domain
+  # is imported but the fact was renamed or rejected" into the identical `null` answers the
+  # question a CEILING needs (did a number arrive) but throws away the question this repo's own
+  # notes said mattered for the other seven mirrors -- WHICH of those two happened, so a rename
+  # inside `nixgpu`/`nixnet`/`nixstorage` (where an empty table is *also* a legitimate answer) had
+  # no way to be told apart from an ordinary host that simply never adopted the domain at all.
+  # `probeFact` is that distinction, built once so this file stops being the second place it gets
+  # reinvented -- see that file's own header for the two evaluation traps a hand-rolled version
+  # keeps falling into.
   #
-  # Two absences, one meaning. "The domain is not imported" and "the domain is imported but the fact
-  # was never stated" are, from this module's side, the same situation: there is no fact to mirror.
-  # Collapsing them into `null` here is what lets the ASSERT-RESOLVED assertions below report BOTH
-  # with a message that can say which option to set and why this module needed it -- rather than one
-  # producing a tidy assertion and the other a raw abort from the middle of an option default, where
-  # nothing can add context to it.
+  # Nothing below changes shape for it: `probeFact` still forces to WHNF only, so a throw nested
+  # inside a mirrored attrset (`gpu`, `storage.disks`, `net`) still surfaces at whoever reads that
+  # far in, and a genuine TYPE error at the owner (`nixcpu.cores = "sixteen"` rejected by its own
+  # `ints.positive`) still arrives here as "unresolved" rather than "rejected", for the same
+  # misdiagnosis-tolerance reason `mirrorOf`'s own header already gave: every assert-resolved
+  # message below still names all three possible causes and tells the operator to evaluate the
+  # owner's option directly to tell them apart.
+  probeFact = (import ../lib/facts.nix { inherit lib; }).probeFact;
+  collectProbes = (import ../lib/facts.nix { inherit lib; }).collectProbes;
+
+  # One probe per level-1 fact. `arch`/`cores`/`ram.totalMiB` are the three CEILINGS this module's
+  # own arithmetic divides against (see the ASSERT-RESOLVED assertions below, which read `.value`
+  # exactly as they read `mirrorOf`'s result before) -- deliberately NOT folded into
+  # `extraFactWarnings` below, because those three already get a louder, conditional report (an
+  # assertion, gated on something actually depending on the ceiling) and adding an unconditional
+  # warning beside it would be noise on top of a build failure. The other seven get a warning here
+  # for the first time -- see `extraFactWarnings`' own comment for why that is safe to add
+  # unconditionally.
+  archProbe = probeFact { inherit config; namespace = "nixcpu"; path = [ "arch" ]; fallback = null; };
+  microarchProbe = probeFact { inherit config; namespace = "nixcpu"; path = [ "microarch" ]; fallback = null; };
+  coresProbe = probeFact { inherit config; namespace = "nixcpu"; path = [ "cores" ]; fallback = null; };
+  threadsProbe = probeFact { inherit config; namespace = "nixcpu"; path = [ "threads" ]; fallback = null; };
+  coreTypesProbe = probeFact { inherit config; namespace = "nixcpu"; path = [ "coreTypes" ]; fallback = null; };
+  schedulerProbe = probeFact { inherit config; namespace = "nixcpu"; path = [ "scheduler" ]; fallback = null; };
+  ramTotalProbe = probeFact { inherit config; namespace = "nixram"; path = [ "hardware" "totalMiB" ]; fallback = null; };
+  gpuProbe = probeFact { inherit config; namespace = "nixgpu"; path = [ "stableDevicePaths" "devices" ]; fallback = { }; };
+  disksProbe = probeFact { inherit config; namespace = "nixstorage"; path = [ "disks" ]; fallback = { }; };
+  netProbe = probeFact { inherit config; namespace = "nixnet"; path = [ "interfaces" ]; fallback = { }; };
+
+  # The seven mirrors with no ceiling arithmetic behind them at all -- nothing here previously
+  # noticed if `nixcpu.threads`/`microarch`/`coreTypes`/`scheduler` or `nixgpu`/`nixstorage`/
+  # `nixnet`'s own tables were renamed out from under this module, because an empty result is
+  # ALSO their legitimate, common answer (most hosts have no GPU; plenty never set a scheduler).
+  # Safe to warn unconditionally, unlike the three ceilings, but for two DIFFERENT reasons rather
+  # than one blanket one:
   #
-  # ⚠ WHAT THIS COSTS, because it is not free: `tryEval` also swallows a genuine TYPE error from the
-  # owner. A `nixcpu.cores = "sixteen"` rejected by nixcpu's own `ints.positive` arrives here as
-  # `null` and is reported as an unresolved fact rather than a rejected value -- a real
-  # misdiagnosis, and the reason every assert-resolved message below explicitly names all three
-  # causes and tells the operator to evaluate the owner's option directly to tell them apart. The
-  # alternative was leaving the raw abort in place for that one case, which buys a precise message
-  # for a rare mistake at the price of an inconsistent failure mode for a common one (and, as the
-  # `overriddenMirrors` check below found the hard way, at the price of not being able to inspect a
-  # mirror's definitions at all: the module system forces every definition's value while discharging
-  # `mkIf`/`mkMerge`, so a throwing default poisons even a question as small as "how many
-  # definitions does this option have").
+  #   `microarch`/`coreTypes`/`scheduler`/`gpu`/`disks`/`net` each have a real default upstream
+  #   (`nixgpu.stableDevicePaths.devices = { }`, `nixcpu.microarch = null`, ... -- see
+  #   `checks/domain-stubs.nix`), so "composed, never stated" already resolves CLEANLY through that
+  #   default and never reaches `probeFact`'s unresolved branch at all; only a genuine rename or a
+  #   rejected value does, which is exactly the gap `experiments/003` logged as unclosed.
   #
-  # Not deep: `tryEval` forces to WHNF, so a throw nested inside a mirrored attrset still surfaces
-  # at whoever reads that far in. That is correct -- the inside of a mirrored table is the owner's
-  # business, and an error from it should be reported by the owner's own words.
-  mirrorOf = fallback: read:
-    let attempt = builtins.tryEval read;
-    in if attempt.success then attempt.value else fallback;
+  #   `threads` shares `cores`/`arch`'s OWN trait instead -- no default upstream, required whenever
+  #   `nixcpu.enable` is true (see nixcpu's own `modules/nixcpu.nix`) -- so "composed, never stated"
+  #   reaches the unresolved branch for `threads` exactly as it would for a rename. Unlike
+  #   `cores`/`arch`, nothing in this module ever divides against `threads` (the CPU oversubscription
+  #   check below is explicitly against `cores`, never `threads`), so there is no ceiling to gate an
+  #   assertion on -- warning unconditionally, the same as the six genuinely-defaulted fields, is the
+  #   only way an operator ever learns their `nixhost.resources.cpu.threads` mirror is resolving to
+  #   `null` instead of the thread count nixcpu requires them to state.
+  extraFactWarnings = (collectProbes [
+    microarchProbe
+    threadsProbe
+    coreTypesProbe
+    schedulerProbe
+    gpuProbe
+    disksProbe
+    netProbe
+  ]).warnings;
 
   # A quantity that must be strictly positive, and may be fractional -- the shape a CPU quota
   # claim actually needs (podman and cgroup quotas are routinely expressed as e.g. 1.5 cores),
@@ -625,12 +666,13 @@ let
   # comparison, it deletes it -- `microarchMismatch` would sit at `false` forever and report a
   # clean bill of health for a host whose two CPU facts were never compared at all.
   #
-  # Reachable precisely BECAUSE the mirrors resolve through `mirrorOf`: nixcpu declares `arch` with
-  # no default, so without that collapse an unstated `arch` would abort evaluation with the module
-  # system's own message instead of arriving here as `null`, and this assertion would be the
+  # Reachable precisely BECAUSE the mirrors resolve through `lib.probeFact`: nixcpu declares `arch`
+  # with no default, so without that collapse an unstated `arch` would abort evaluation with the
+  # module system's own message instead of arriving here as `null`, and this assertion would be the
   # unreachable half of a pair (which is what an earlier draft of this module measured, before
-  # `mirrorOf` existed). A host with a microarch and no arch is a host nixcpu itself only refuses
-  # when `nixcpu.enable` is true, so this is the check that covers the fact-only case.
+  # `mirrorOf` -- `probeFact`'s own predecessor, local to this file -- existed). A host with a
+  # microarch and no arch is a host nixcpu itself only refuses when `nixcpu.enable` is true, so
+  # this is the check that covers the fact-only case.
   archUnresolved = cfg.resources.cpu.microarch != null && cfg.resources.cpu.arch == null;
 
   # ── A mirror with a SECOND definition, caught where it was typed ─────────────────────────────
@@ -651,14 +693,15 @@ let
   # that question gets asked, because the module system reports a readOnly violation by throwing
   # from the option itself rather than by returning anything inspectable.
   #
-  # ⚠ THIS ONLY WORKS BECAUSE THE DEFAULTS GO THROUGH `mirrorOf`, and finding that out is what
-  # bought that helper. Reading `opt.definitions` is not the cheap structural question it looks
-  # like: the module system discharges `mkIf`/`mkMerge` properties while building the definition
-  # list, which FORCES every definition's value -- including the option's own default. With a
-  # default that throws (a domain imported without the fact stated), this check therefore reported a
-  # phantom "you declared this twice" on a host that had declared nothing at all. `mirrorOf` makes
-  # every default resolve to a value instead of a throw, which leaves the readOnly violation as the
-  # only thing left in here that can throw.
+  # ⚠ THIS ONLY WORKS BECAUSE THE DEFAULTS GO THROUGH `lib.probeFact`, and finding that out (via
+  # this file's own predecessor, `mirrorOf`) is what bought that mechanism its `tryEval` in the
+  # first place. Reading `opt.definitions` is not the cheap structural question it looks like: the
+  # module system discharges `mkIf`/`mkMerge` properties while building the definition list, which
+  # FORCES every definition's value -- including the option's own default. With a default that
+  # throws (a domain imported without the fact stated), this check therefore reported a phantom
+  # "you declared this twice" on a host that had declared nothing at all. `probeFact` makes every
+  # default resolve to a value instead of a throw, which leaves the readOnly violation as the only
+  # thing left in here that can throw.
   mirrorOverridden = opt: !(builtins.tryEval (length opt.definitions)).success;
 
   overriddenMirrors = filter (m: mirrorOverridden m.opt)
@@ -821,7 +864,7 @@ in
         arch = mkOption {
           type = types.nullOr types.str;
           readOnly = true;
-          default = mirrorOf null (config.nixcpu.arch or null);
+          default = archProbe.value;
           example = "x86_64";
           description = ''
             A read-only MIRROR of `config.nixcpu.arch`: this host's actual instruction-set
@@ -837,7 +880,7 @@ in
         microarch = mkOption {
           type = types.nullOr types.str;
           readOnly = true;
-          default = mirrorOf null (config.nixcpu.microarch or null);
+          default = microarchProbe.value;
           example = "x86_64-v3";
           description = ''
             A read-only MIRROR of `config.nixcpu.microarch`: the microarchitecture/psABI level
@@ -858,7 +901,7 @@ in
         cores = mkOption {
           type = types.nullOr types.ints.positive;
           readOnly = true;
-          default = mirrorOf null (config.nixcpu.cores or null);
+          default = coresProbe.value;
           example = 16;
           description = ''
             A read-only MIRROR of `config.nixcpu.cores`: physical cores actually installed. This
@@ -877,7 +920,7 @@ in
         threads = mkOption {
           type = types.nullOr types.ints.positive;
           readOnly = true;
-          default = mirrorOf null (config.nixcpu.threads or null);
+          default = threadsProbe.value;
           example = 32;
           description = ''
             A read-only MIRROR of `config.nixcpu.threads`: logical threads actually exposed
@@ -899,7 +942,7 @@ in
         coreTypes = mkOption {
           type = types.nullOr types.attrs;
           readOnly = true;
-          default = mirrorOf null (config.nixcpu.coreTypes or null);
+          default = coreTypesProbe.value;
           example = literalExpression ''
             {
               performance = { cores = 4; threadsPerCore = 1; };
@@ -926,7 +969,7 @@ in
         scheduler = mkOption {
           type = types.nullOr types.str;
           readOnly = true;
-          default = mirrorOf null (config.nixcpu.scheduler or null);
+          default = schedulerProbe.value;
           example = "bore";
           description = ''
             A read-only MIRROR of `config.nixcpu.scheduler`: the CPU scheduler variant this
@@ -942,7 +985,7 @@ in
         totalMiB = mkOption {
           type = types.nullOr types.ints.positive;
           readOnly = true;
-          default = mirrorOf null (config.nixram.hardware.totalMiB or null);
+          default = ramTotalProbe.value;
           example = 131072;
           description = ''
             A read-only MIRROR of `config.nixram.hardware.totalMiB`: RAM actually installed, in
@@ -968,7 +1011,7 @@ in
       gpu = mkOption {
         type = types.attrs;
         readOnly = true;
-        default = mirrorOf { } (config.nixgpu.stableDevicePaths.devices or { });
+        default = gpuProbe.value;
         description = ''
           A read-only MIRROR of `config.nixgpu.stableDevicePaths.devices` (see nixgpu's own
           `modules/stable-device-paths/options.nix`): the GPUs -- and GPU-shaped devices, a
@@ -1003,7 +1046,7 @@ in
         disks = mkOption {
           type = types.attrs;
           readOnly = true;
-          default = mirrorOf { } (config.nixstorage.disks or { });
+          default = disksProbe.value;
           description = ''
             A read-only MIRROR of `config.nixstorage.disks` (see nixstorage's own
             `modules/disks.nix`), reached through this host's own namespace so
@@ -1025,7 +1068,7 @@ in
       net = mkOption {
         type = types.attrs;
         readOnly = true;
-        default = mirrorOf { } (config.nixnet.interfaces or { });
+        default = netProbe.value;
         description = ''
           A read-only MIRROR of `config.nixnet.interfaces` (see nixnet's own `modules/core.nix`):
           the network interfaces this host actually has, keyed by a short stable name, each
@@ -1054,6 +1097,14 @@ in
       '';
     };
   };
+
+  # The seven non-ceiling mirrors' own report, from `extraFactWarnings` above: a rename or a
+  # rejected value inside `nixcpu.threads`/`microarch`/`coreTypes`/`scheduler` or `nixgpu`/
+  # `nixstorage`/`nixnet`'s own tables, on a host where that domain genuinely IS composed. Warnings,
+  # deliberately, never assertions -- these seven have no ceiling arithmetic behind them (see
+  # `extraFactWarnings`' own comment above), so nothing here has enough at stake to fail a build
+  # over; the point is only that an operator who never watches for it now has something to see.
+  config.warnings = extraFactWarnings;
 
   config.assertions =
     [
@@ -1117,11 +1168,12 @@ in
       # nothing errors -- while making it impossible for that same host to ASK for a check and be
       # handed silence instead.
       #
-      # ALL THREE WAYS A FACT CAN FAIL TO ARRIVE end up here as one message, because `mirrorOf`
-      # collapses them (see its own comment): the domain is not imported, the domain is imported but
-      # the fact was never stated, or the owner rejected the value it was given. Each message below
-      # therefore names all three and says how to tell them apart -- evaluate the owner's own option
-      # -- rather than asserting the most likely one and misdiagnosing the other two.
+      # ALL THREE WAYS A FACT CAN FAIL TO ARRIVE end up here as one message, because `probeFact`'s
+      # own `state == "unresolved"` collapses them (see `lib/facts.nix`'s header): the domain is
+      # not imported, the domain is imported but the fact was never stated, or the owner rejected
+      # the value it was given. Each message below therefore names all three and says how to tell
+      # them apart -- evaluate the owner's own option -- rather than asserting the most likely one
+      # and misdiagnosing the other two.
       {
         assertion = !ramCeilingUnresolved;
         message = ''

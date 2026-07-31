@@ -59,6 +59,21 @@
       # ---------------------------------------------------------------
       lib = {
         assertHosts = (import ./lib/hosts.nix { inherit lib; }).assertHosts;
+
+        # ---------------------------------------------------------------
+        # The CROSS-NAMESPACE half: a defensive `config.nixfoo.bar or fallback` read cannot tell
+        # "nixfoo is not composed here" from "nixfoo is composed but `bar` moved, was renamed, or
+        # was rejected by its own type" -- both land on the same fallback with no trace of which
+        # happened, and the second one is a silent defect, not a supported state. `lib.probeFact`
+        # is the fix, built once here rather than reinvented per-repo (see `lib/facts.nix`'s own
+        # header for the defect class and the two evaluation traps a naive fix falls into).
+        #
+        # A plain function over `config`/plain data, like `assertHosts` above -- it forces nothing
+        # NixOS-specific and costs nothing when the namespace it is asked about was never composed
+        # (`checks/facts.nix` proves this against a namespace whose own value would throw if
+        # forced at all).
+        # ---------------------------------------------------------------
+        inherit (import ./lib/facts.nix { inherit lib; }) probeFact collectProbes;
       };
 
       checks = forAllSystems (system:
@@ -68,6 +83,8 @@
           nixhostModule = self.nixosModules.nixhost;
           systemManagerLib = system-manager.lib;
           assertHosts = self.lib.assertHosts;
+          probeFact = self.lib.probeFact;
+          collectProbes = self.lib.collectProbes;
         });
 
       formatter = forAllSystems (system: (pkgsFor system).nixpkgs-fmt);

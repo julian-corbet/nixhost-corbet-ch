@@ -77,6 +77,21 @@ one: a rename upstream would leave every check here green while every host silen
 `null` -- which the assert-resolved assertions would catch for the two ceilings, and would NOT catch
 for `gpu`/`net`/`storage.disks`, where an empty table is a legitimate state.
 
+**Update (`lib.probeFact`, `lib/facts.nix`):** the RUNTIME half of this gap is now closed. Every
+level-1 mirror reads through `lib.probeFact`, which tells "domain not composed" apart from "domain
+composed, but this leaf did not resolve" and renders the second as a `config.warnings` entry naming
+the option path, the namespace, and the fallback in use -- for `gpu`/`net`/`storage.disks` exactly as
+much as for the two ceilings (see `checks/default.nix`'s `fact-wiring/*` group, which proves this
+against a REAL renamed `nixgpu` option surface, composed through the actual `nixhostModule`). A real
+host that renames a fact out from under one of these mirrors now gets a warning instead of silence.
+
+What remains open is narrower than the original question: this repo's own CI still cannot notice if
+`checks/domain-stubs.nix` ITSELF drifts from the real nixcpu/nixgpu/nixram/nixnet/nixstorage option
+surfaces -- a stub that stays wrong in the same way the real module changed would still show green
+here. `lib.probeFact` protects every HOST that adopts it; it does not protect this repo's own test
+fixture from going stale relative to the five repos it stands in for. The method sketch below (a CI
+job in the consuming flake, or a `nix eval` surface-diff) is still the way to close that half.
+
 **Hypothesis:** the stub is faithful today (it was written by reading each owner's option
 declaration field by field, including which fields have no default), and the mirrors work exactly
 as nixboot's `esp.fromLayout` defensive read already does in production against `nixstorage.layout`.

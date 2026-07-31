@@ -50,10 +50,14 @@ erroring.
 There's a wrinkle worth knowing about, because a bare `or` gets it wrong: `or` tests whether an
 attribute *path* exists, and a declared option's path exists the moment its module is imported —
 definition or not. So for a field the owner requires (`nixcpu.cores` has no default), `or` hands back
-the module system's own throwing thunk rather than the fallback. nixhost collapses that case into the
-same `null`, because from here "the domain isn't imported" and "the domain is imported but the fact
-was never stated" are the same situation: there is no fact to mirror. Both then produce one assertion
-that names the option to set — see `mirrorOf` in the module for what that collapse costs.
+the module system's own throwing thunk rather than the fallback, and a bare `or` cannot tell that
+apart from a domain that was simply never imported. Both mirrors' defaults read through
+[`lib.probeFact`](#the-cross-namespace-half-libprobefact) instead, which tells the two apart:
+"the domain isn't imported at all" stays completely silent (there is no fact to mirror, and nothing
+here can say there should be one), while "the domain is imported but this exact leaf didn't resolve" —
+a rename, a value the owner rejected, or a required field genuinely never given a value — is
+reported, by default as a `config.warnings` entry naming the option, the namespace, and the
+fallback actually in use. Neither case is left to a hand-written assertion in this module anymore.
 
 Setting one of these on a host is a build failure naming the owner to use instead, not an override —
 a second copy of a fact wouldn't be redundancy, it would be two numbers that agree today and
@@ -76,8 +80,12 @@ step with the arithmetic it guards. A host that claims nothing is never asked fo
 `cpu.arch` gets the same treatment for the same reason, one step removed: it isn't a ceiling, but the
 microarch-vs-arch cross-check divides a claim by it in spirit — with no `arch`, that check silently
 compares nothing. Every other mirror (`threads`, `microarch`, `coreTypes`, `scheduler`, `gpu`, `net`,
-`storage.disks`) is a plain mirror, because no check here depends on it, so an absent value disables
-nothing and `null`/`{ }` is a truthful answer.
+`storage.disks`) carries no *assertion*, because no arithmetic here divides against it, so a domain
+that was never composed at all disables nothing and `null`/`{ }` is a truthful, silent answer. That
+is not the same as carrying no report at all, though: each of these still runs through
+`lib.probeFact`, so a domain that genuinely **is** composed but whose fact renamed, was rejected, or
+was never given a value it requires (`nixcpu.threads`, in particular — see the module's own header)
+still surfaces as a `config.warnings` entry. Non-fatal, but no longer invisible either.
 
 ## The model
 
@@ -265,6 +273,66 @@ assertion over plain data. Every field in the tree is optional, so a partially-d
 produces zero violations rather than an error — a cross-host check that crashes on an incomplete host
 cannot be adopted one host at a time.
 
+## The cross-namespace half: `lib.probeFact`
+
+A defensive `config.<domain>.<path> or <fallback>` read — the idiom every level-1 mirror above uses,
+and the one every sibling repo in this family has independently hand-rolled at least once — conflates
+three states that are not one state:
+
+| state | meaning | reported as |
+|---|---|---|
+| **absent** | the sibling domain is not composed on this host at all | nothing — silent, always |
+| **resolved** | it *is* composed, and the fact genuinely resolves (including to a value that happens to equal the fallback) | nothing — silent, always |
+| **unresolved** | it *is* composed, but this exact leaf moved, was renamed, was rejected by its own type, or was required and never given a value | a message, by default |
+
+A bare `or` cannot tell **unresolved** apart from **absent** — both land on the identical fallback
+with no trace of which happened — and that is not a hypothetical gap: it is what cost this family
+real weeks of dead features when a mirrored option moved underneath a defensive reader elsewhere in
+this repo family, and it was caught live again the same week this mechanism was built. `lib.probeFact`
+is the fix, built once so other repos stop reinventing it:
+
+```nix
+{ config, lib, ... }:
+let
+  probe = lib.probeFact {
+    inherit config;
+    namespace = "nixcpu";        # the ONE top-level attribute that means "the sibling is composed"
+    path = [ "hardware" "totalMiB" ]; # or the dotted string "hardware.totalMiB" -- both normalise the same
+    fallback = null;             # substituted for "absent" and "unresolved"; never inspected to
+                                  # decide which state occurred
+    # mode = "warn";             # default -- renders into `.warnings`, meant for `config.warnings`
+    # mode = "assert";           # opt in for a load-bearing read -- renders into `.assertions`,
+                                  # shaped for `config.assertions`, and produces nothing in `.warnings`
+  };
+in {
+  options.mymodule.ramTotal = lib.mkOption {
+    type = lib.types.nullOr lib.types.ints.positive;
+    readOnly = true;
+    default = probe.value;                # the resolved value, or `fallback`
+  };
+
+  config.warnings = probe.warnings;       # [] unless state == "unresolved" and mode == "warn"
+  config.assertions = probe.assertions;   # [] unless state == "unresolved" and mode == "assert"
+}
+```
+
+Mirroring several facts at once (this module's own dozen-odd level-1 mirrors, for instance) folds
+every probe through `lib.collectProbes`, rather than writing that fold at every call site:
+
+```nix
+config.warnings = (lib.collectProbes [ probeA probeB probeC ]).warnings;
+```
+
+Like `assertHosts`, it is a **plain function**, not a module: it forces nothing NixOS-specific, and
+answering "absent" costs nothing — it never opens the namespace at all, proven in `checks/facts.nix`
+against a namespace whose own value would throw if it were ever forced, and again in
+`checks/facts-integration.nix` against a real NixOS config whose *unrelated* module has a genuinely
+failing assertion, to show that probing an absent namespace never goes anywhere near a system build.
+See `lib/facts.nix`'s own header for the two evaluation traps (`tryEval` not catching an `or`
+fallback, and `or null` not catching a mandatory-unset option) a hand-rolled version keeps falling
+into, and `checks/default.nix`'s `fact-wiring/*` group for this exact mechanism proven end to end
+against this module's own real mirrors, including a genuine renamed option.
+
 ## Three backends, one file
 
 `nixosModules.nixhost`, `systemManagerModules.nixhost`, and `darwinModules.nixhost` all point at
@@ -355,7 +423,8 @@ two real hosts, and behavior at a host running more than a couple of environment
 | Path | Purpose |
 |---|---|
 | `flake.nix` | Flake entry point: `nixosModules.default` / `systemManagerModules.default` / `darwinModules.default` (the same file, all three). |
-| `modules/nixhost.nix` | The module: the full option surface (`stance`, `resources`, `environments`) and the eight assertion groups. Every `resources` field is a read-only mirror of the domain that owns it. |
+| `modules/nixhost.nix` | The module: the full option surface (`stance`, `resources`, `environments`) and the eight assertion groups. Every `resources` field is a read-only mirror of the domain that owns it, read through `lib.probeFact`. |
+| `lib/hosts.nix`, `lib/facts.nix` | The two plain-function `lib` outputs: `assertHosts` (cross-host) and `probeFact`/`collectProbes` (cross-namespace). Neither is a module, and neither is specific to this repo's own use of it — see their own sections above. |
 | `examples/host/configuration.nix` | A complete, self-contained, entirely fictional host — the shape `checks/`'s `example/modules-evaluate` test proves evaluates cleanly on its own. |
-| `checks/` | Eval-time tests: every assertion proven in both directions, plus NixOS/system-manager backend parity. `checks/domain-stubs.nix` supplies the mirrored domains' option SHAPE, so the mirrors can be tested without this repo taking a flake input on five other repos. |
+| `checks/` | Eval-time tests: every assertion proven in both directions, plus NixOS/system-manager backend parity. `checks/domain-stubs.nix` supplies the mirrored domains' option SHAPE, so the mirrors can be tested without this repo taking a flake input on five other repos. `checks/facts.nix`/`checks/facts-integration.nix` prove `lib.probeFact` itself; the `fact-wiring/*` group in `checks/default.nix` proves it composed through this module's own real mirrors. |
 | `experiments/`, `studies/` | Open questions this repo's own reasoning hasn't yet measured, and the (currently empty) record of the ones that have been. |

@@ -19,8 +19,9 @@
 #   `nixcpu.arch`/`cores`/`threads` have NO default upstream, and that is not a detail to smooth
 #   over. It is what makes the harder absence testable at all: "domain imported, fact never stated"
 #   reaches nixhost's mirror as a value the module system aborts on, which is a different ROUTE from
-#   "domain not imported", where the defensive `or` simply finds no attribute -- and nixhost's
-#   `mirrorOf` exists to give both routes the same answer. Tests for the second route evaluate
+#   "domain not imported", where the defensive `or` simply finds no attribute -- and `lib.probeFact`
+#   (`../lib/facts.nix`), which every level-1 mirror in `modules/nixhost.nix` now reads through,
+#   exists to give both routes the same answer. Tests for the second route evaluate
 #   WITHOUT this file (see `nixosBuildFailsBare` in default.nix); a stub that handed these fields a
 #   default would leave the first route unexercised, and an earlier draft of nixhost had a real bug
 #   that only that route exposed.
