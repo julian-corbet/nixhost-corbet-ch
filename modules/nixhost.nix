@@ -1,157 +1,87 @@
-# modules/nixhost.nix
+# THE NAMESPACE ROOT: one host, addressed as a path. `nixhost.name` is the first segment of every
+# fact this family states about a machine -- `fileserver.storage.disks.solid0`,
+# `workstation.cpu.microarch` -- and this module declares and checks everything hanging off it.
+# Imported ONCE per host, by that host's own configuration; the cross-host half is `lib/hosts.nix`.
 #
-# THE NAMESPACE ROOT: one host, addressed as a path. `nixhost.name` is the first segment
-# of every fact this family can state about a machine -- `fileserver.storage.disks.solid0`,
-# `workstation.cpu.microarch`, `fileserver.k3s.gpu.gpu0` -- and this module is where that
-# segment, and everything hanging off it, gets declared and checked. It is imported ONCE per
-# host, by that host's own configuration, never by a registry describing many hosts at once
-# (that's a cross-host registry's job -- this module is imported once PER HOST, by that host's
-# own configuration).
+# PURE DATA: no `systemd.services`, no `environment.systemPackages`, no `pkgs` argument -- nothing
+# here runs, installs, or configures a device. That's what makes the same file loadable unchanged
+# as `nixosModules`, `systemManagerModules`, AND `darwinModules` (see flake.nix): a Mac under
+# nix-darwin has just as much of a CPU and a RAM total as a NixOS server does, and none of that is
+# NixOS-specific.
 #
-# THIS MODULE IS PURE DATA. Read that literally: no `systemd.services`, no
-# `environment.systemPackages`, no `pkgs` argument at all -- nothing this module declares ever
-# runs, installs a package, or configures a device. That is what makes the same file loadable,
-# unchanged, as `nixosModules`, `systemManagerModules`, AND `darwinModules` (see flake.nix and
-# this file's own "THREE BACKENDS, ONE FILE" note below) -- a Mac under nix-darwin has just as
-# much of a CPU, a RAM total, and a set of environments standing on it as a NixOS server does,
-# and none of that is a NixOS-specific concept. The precedent this follows exactly is nixiam's
-# `modules/posix.nix`: no `pkgs`, nothing that runs, so importing it costs a host nothing beyond
-# the fact table itself.
+# TWO LEVELS. LEVEL 1 (`resources`) is the machine itself: cores physically present, RAM actually
+# installed, GPUs actually plugged in. LEVEL 2 (`environments`) is whatever stands ON that machine
+# and consumes a PROJECTION of it -- a k3s node capped to 100 of 128 GiB, a VM quota-limited to 24
+# of 32 threads. An environment's `resources` block is an independent claim this module checks FOR
+# CONSISTENCY against the level-1 total: sum every environment's claim, refuse to evaluate if the
+# total exceeds what the host actually has.
 #
-# ── Two levels, and why they are never the same object ──────────────────────────────────────
+# A GPU HAS TWO PARENTS: a card is consumed both by bare-metal apps on the host AND by whatever
+# pods a k3s environment on that SAME host schedules onto it -- `fileserver.gpu.gpu0` and
+# `fileserver.k3s.gpu.gpu0` are two paths into the same physical card. That's why
+# `environments.<name>.resources.gpu.<gpuName>.access` is keyed by the SAME name as
+# `resources.gpu.<gpuName>` rather than each environment inventing its own namespace: two
+# environments claiming the identically-named device are actually contending for one piece of
+# silicon, and the exclusive/shared conflict check below only means anything because the name is
+# shared.
 #
-# LEVEL 1 (`resources`) is the machine itself: how many cores it physically has, how much RAM
-# is actually installed, which GPUs are actually plugged in. LEVEL 2 (`environments`) is
-# whatever stands ON that machine and consumes a PROJECTION of it -- a k3s node that is capped
-# to 100 GiB out of 128 GiB actually installed, a podman container denied the GPU entirely, a VM
-# quota-limited to 24 of 32 threads. An environment's `resources` block is never the level-1
-# block reused or aliased -- it is an independent claim this module can check FOR CONSISTENCY
-# against the level-1 total, which is the one thing nothing in this family could do before this
-# repo existed: sum every environment's claimed RAM and compare it to what the host actually
-# has, and refuse to evaluate if the claims don't fit.
+# LEVEL 1 IS A MIRROR, NOT A DECLARATION. Every option under `resources` is `readOnly`, defaulted
+# defensively out of the repo that OWNS the fact (`nixcpu`, `nixram`, `nixgpu`, `nixnet`,
+# `nixstorage`) via `lib.probeFact` (`../lib/facts.nix`) -- never a flake input on the domain, so a
+# domain repo stays usable by someone who has never heard of nixhost, and a host can import nixhost
+# while owning only some domains. `readOnly` makes "one spot per fact" structural: a host that sets
+# one of these mirrors has set it twice and gets a build failure naming the option to set instead,
+# rather than a silent override.
 #
-# ── Why a GPU has two parents, and what that means for this file ────────────────────────────
+# `probeFact` tells apart "the domain isn't composed here" from "the domain is composed but the
+# fact was renamed or rejected by its own type" -- both would otherwise collapse to the same `null`
+# fallback. It forces to WHNF only, so a throw nested inside a mirrored attrset still surfaces at
+# whoever reads that far in, and a genuine type error at the owner still arrives here as
+# "unresolved" rather than "rejected" -- every assert-resolved message below names all three
+# possible causes and tells the operator to evaluate the owner's option directly to tell them apart.
 #
-# A GPU plugged into one host is simultaneously consumed by bare-metal apps on that host AND by
-# whatever pods a k3s environment standing on the SAME host schedules onto it --
-# `fileserver.gpu.gpu0` and `fileserver.k3s.gpu.gpu0` are two different paths into the
-# same physical card. That is why `environments.<name>.resources.gpu.<gpuName>.access` is keyed
-# by the SAME name as `resources.gpu.<gpuName>` rather than each environment inventing its own
-# private GPU namespace -- two environments claiming the identically-named device are, in
-# reality, contending for one piece of silicon, and the exclusive/shared conflict check below
-# only means anything because the name is shared.
+# WHY SOME MIRRORS GET AN ASSERTION AND OTHERS DON'T. `cpu.cores` and `ram.totalMiB` are CEILINGS
+# the oversubscription arithmetic divides against: an empty disk table or GPU inventory is a
+# legitimate state, but a missing core count makes every comparison against it vacuously true --
+# the check reports success while checking nothing, worse than the required option it replaced
+# because it fails silently. So a mirrored CEILING gets MIRROR + ASSERT-RESOLVED: `readOnly`, a
+# defensive default, and an assertion that fires whenever something actually depends on the
+# ceiling and it didn't resolve (`claimed > 0`, computed by the same fold that divides against the
+# ceiling, so the guard can't drift out of step with the arithmetic it guards). `cpu.arch` gets the
+# same treatment one step removed, as the value the microarch cross-check compares against. Every
+# other mirror is plain: an assertion belongs on a mirror only if something here would otherwise
+# stop working without saying so.
 #
-# ── LEVEL 1 IS A MIRROR. NOTHING HERE DECLARES A HARDWARE FACT. ──────────────────────────────
+# WHAT THIS MODULE REFUSES TO OWN:
+#   - HOW a domain works (nixgpu decides scheduling, nixstorage decides filesystem shape).
+#   - POLICY (which services run on a host is that host's own configuration).
+#   - PLATFORM-SPECIFIC RENDERING: this file stays pure data because it's imported unchanged by
+#     all three backends and a cgroup attribute is meaningless under nix-darwin. Derivation lives
+#     in the separately-exported sibling modules each host imports if its platform has the
+#     mechanism.
 #
-# Every option under `resources` is `readOnly`, and its default is read defensively out of the
-# repository that OWNS the fact: `nixcpu` for the CPU, `nixram` for the RAM total, `nixgpu` for the
-# device inventory, `nixnet` for the interface table, `nixstorage` for the disks. The rule is
-# literal -- if you want to know what CPU a host has, that must live in exactly ONE spot. A second
-# typeable copy here would not be redundancy, it would be drift with a delay: two numbers that
-# agree on the day they are written and disagree the day a card is swapped, with nothing comparing
-# them. `readOnly` is what makes that structural rather than a convention: the option's own default
-# counts as a definition, so a host that sets one of these has "set it multiple times" and gets a
-# build failure -- reported by this module's own assertion, naming the owning option to use instead,
-# rather than as an override that quietly wins.
+# THE SUBSTRATE CONTRACT: `environments.<name>` is the seam between this module and the repos that
+# build a second-level entity (k3s, vm, podman, lxc) -- each a different mechanism sharing no
+# implementation, but sharing the declaration, which lives here. THIS MODULE declares that an
+# environment EXISTS, what KIND it is, and what ENVELOPE it may claim (RAM, cores, GPU access
+# stance); it owns the only arithmetic nothing else can do, summing every environment's claim
+# against the host total. A SUBSTRATE REPO reads its own slice and builds the thing -- it must NOT
+# declare a second resource envelope of its own, or the oversubscription assertion above ends up
+# guarding a number nobody uses, which is worse than no assertion because it reads as coverage.
+# Read this slice defensively (`config.nixhost.environments or { }`), same one-way rule as every
+# other consumer in this family.
 #
-# The idiom is `config.<domain>.<path> or <empty>` -- never a flake input on the domain. This repo
-# takes no input but a checks-only nixpkgs, and that is load-bearing in BOTH directions: a domain
-# repo has to stay usable by someone who has never heard of nixhost (so the dependency can only
-# point this way), and a host has to be able to import nixhost while owning only some of the
-# domains (so the read has to tolerate the domain being absent, resolving to `null`/`{ }` rather
-# than erroring). `lib.probeFact` (`../lib/facts.nix`) below is that read, and its own header
-# covers the two cases a bare `or` gets wrong -- a domain imported with the fact never stated
-# (which is not the same absence as the domain not being imported, but resolves to the same value
-# either way) AND a domain imported with the fact RENAMED out from under this read, which is a
-# genuine defect this module used to have no way to tell apart from either legitimate absence.
+# ONE HOST HERE; MANY HOSTS IN `lib/hosts.nix`. Every assertion below validates a host against
+# ITSELF. The cross-host half is a plain function over plain data, not a module, for two reasons:
+# per-host validity is not validity across hosts (two hosts can each be correct by every assertion
+# either makes about itself while both claim the same physical disk -- nothing here can see that),
+# and a cross-host read through the module system is the one read shape that goes nonlinear
+# (`studies/eval-cost/`: ~2.6h at 100 hosts against ~0.05s over plain data).
 #
-# ── ...and why some of those mirrors need an assertion the others don't ──────────────────────
-#
-# `cpu.cores` and `ram.totalMiB` are not merely facts here, they are the CEILINGS the
-# oversubscription arithmetic divides against. An empty disk table or an empty GPU inventory is a
-# legitimate state -- a host with nothing recorded and no card plugged in -- but a missing core
-# count is not: every comparison against it becomes vacuously true, so the check reports success
-# while checking nothing. That is strictly WORSE than the required option it replaced, and it is
-# worse in the invisible direction: no message, no warning, a green build.
-#
-# So a mirrored CEILING carries a third part -- MIRROR + ASSERT-RESOLVED: `readOnly`, a defensive
-# default, AND an assertion that fires whenever something actually depends on the ceiling and it
-# did not resolve. "Something depends on it" is deliberately not restated as its own predicate: it
-# is `claimed > 0`, computed by the very fold that would otherwise have divided against the missing
-# ceiling (see `budgetsFor` below), so the guard cannot drift out of step with the arithmetic it
-# guards. A host with no environments is never asked for a ceiling it has no use for.
-#
-# `cpu.arch` carries the same kind of assertion one step removed: not a ceiling, but the one value
-# the microarch cross-check compares against, so an unresolved `arch` makes that check vacuous in
-# exactly the same way. Every other mirror is plain, because no check here depends on it -- and that
-# is the whole rule for when to add one: an assertion belongs on a mirror if, and only if, something
-# in this module would otherwise stop working without saying so.
-#
-# ── What this module refuses to own ──────────────────────────────────────────────────────────
-#
-# - HOW a domain works. A GPU exists here only as whatever nixgpu's own inventory says it is;
-#   nixgpu decides the scheduling mechanism that shares it. A disk exists here only as
-#   nixstorage's own table; nixstorage decides its filesystem shape.
-# - POLICY. Which services actually run on a host is that host's own configuration, not this
-#   module's business -- `environments.<name>` says a k3s node exists and how much of the host
-#   it may claim, never which pods it runs.
-# - PLATFORM-SPECIFIC RENDERING. This FILE stays pure data, and the reason is concrete rather
-#   than philosophical: it is imported unchanged by nixosModules, systemManagerModules and
-#   darwinModules, so anything it computed would have to be meaningful on all three, and a
-#   cgroup attribute is meaningless under nix-darwin. Derivation therefore lives in the
-#   separately-exported sibling modules, which each host imports only if its platform has the
-#   mechanism.
-#
-#   This replaces an earlier, stronger claim that "nothing computed from these facts is allowed
-#   to live here" anywhere in the repo -- that a fact turning into a tuning value would make this
-#   a policy engine. That framing was wrong and has been withdrawn: a fact table nothing derives
-#   from is a fact table nothing uses, and the whole point of declaring a resource envelope is
-#   that something downstream renders it. The real boundary is the file/platform one above, not a
-#   prohibition on derivation.
-#
-# ── THE SUBSTRATE CONTRACT: one declaration, four mechanisms ─────────────────────────────────
-#
-# `environments.<name>` is the seam between this module and the repositories that actually build
-# a second-level entity. Every substrate -- k3s, vm, podman, lxc -- is a different mechanism, and
-# they deliberately share no implementation: a cluster with a control plane, hardware emulation,
-# an OCI runtime and a system container have nothing in common at the code level. What they DO
-# share is the declaration, and it lives here.
-#
-# The division, and the reason it is worth having:
-#
-#   THIS MODULE declares that an environment EXISTS, what KIND it is, and what ENVELOPE it may
-#   claim -- RAM, physical cores, and its access stance on each named GPU. It also owns the only
-#   arithmetic nothing else can do: summing what every environment on a host claims and refusing
-#   to evaluate when the total exceeds what the host actually has.
-#
-#   A SUBSTRATE REPO reads its own slice and builds the thing. It must NOT declare a second
-#   resource envelope of its own. A substrate that grows its own `memoryLimit` beside
-#   `environments.<name>.resources.ram.limitMiB` has created a fact with two owners, and the
-#   oversubscription assertion above then guards a number nobody is using -- which is worse than
-#   no assertion, because it reads as coverage.
-#
-# Read this slice DEFENSIVELY (`config.nixhost.environments or { }`), never as a flake input on
-# this repo: the same one-way rule every other consumer in this family follows, so a substrate
-# stays independently usable by someone who has never imported nixhost.
-#
-# ── ONE HOST HERE; MANY HOSTS IN `lib/hosts.nix` ───────────────────────────────────────────
-#
-# This module is imported once PER HOST, by that host's own configuration, and every assertion
-# below validates that host against ITSELF. The cross-host half is deliberately not a module at
-# all: `lib.assertHosts` is a plain function over plain data, because per-host validity is not
-# validity across hosts -- two hosts can each be correct by every assertion either one is able to make
-# about itself while both claim the same physical disk. Nothing here can see that; the fact that
-# makes it wrong lives in the other host's configuration.
-#
-# The split is also a cost boundary, measured in `studies/eval-cost/`: a cross-host read through
-# the module system is the one read shape that goes nonlinear (~2.6 h at 100 hosts against
-# ~0.05 s for the same assertion over plain data), so the cross-host checks must never reach
-# into another host's `config`.
-#
-# A SLUG NAMES A POSITION, NOT A PHYSICAL OBJECT. `nixhost.name` is reusable on purpose: replace
-# a machine and its successor keeps the slug, because every cross-host reference to it stays
-# valid. Hardware identity therefore lives entirely in the domain tables -- a disk's by-id path,
-# an interface's address -- and those are what change on a replacement, never the name.
+# A SLUG NAMES A POSITION, NOT A PHYSICAL OBJECT. `nixhost.name` is reusable on purpose: replace a
+# machine and its successor keeps the slug, so every cross-host reference stays valid. Hardware
+# identity lives entirely in the domain tables (a disk's by-id path, an interface's address) --
+# those change on a replacement, never the name.
 { config, options, lib, ... }:
 
 with lib;
@@ -159,39 +89,24 @@ with lib;
 let
   cfg = config.nixhost;
 
-  # ── Reading a fact out of the domain that owns it, without depending on that domain ──────────
-  #
-  # Every level-1 mirror's default goes through `lib.probeFact` (`../lib/facts.nix`) now, not a
-  # hand-rolled helper local to this file -- this WAS that helper (`mirrorOf`, a `tryEval`-and-
-  # fall-back one-liner), and it had exactly the gap this repo's own `experiments/003` and
-  # `experiments/008` had already logged: collapsing "the domain is not imported" and "the domain
-  # is imported but the fact was renamed or rejected" into the identical `null` answers the
-  # question a CEILING needs (did a number arrive) but throws away the question this repo's own
-  # notes said mattered for the other seven mirrors -- WHICH of those two happened, so a rename
-  # inside `nixgpu`/`nixnet`/`nixstorage` (where an empty table is *also* a legitimate answer) had
-  # no way to be told apart from an ordinary host that simply never adopted the domain at all.
-  # `probeFact` is that distinction, built once so this file stops being the second place it gets
-  # reinvented -- see that file's own header for the two evaluation traps a hand-rolled version
-  # keeps falling into.
-  #
-  # Nothing below changes shape for it: `probeFact` still forces to WHNF only, so a throw nested
-  # inside a mirrored attrset (`gpu`, `storage.disks`, `net`) still surfaces at whoever reads that
-  # far in, and a genuine TYPE error at the owner (`nixcpu.cores = "sixteen"` rejected by its own
-  # `ints.positive`) still arrives here as "unresolved" rather than "rejected", for the same
-  # misdiagnosis-tolerance reason `mirrorOf`'s own header already gave: every assert-resolved
-  # message below still names all three possible causes and tells the operator to evaluate the
-  # owner's option directly to tell them apart.
+  # Every level-1 mirror's default goes through `lib.probeFact` (`../lib/facts.nix`): it tells
+  # apart "the domain is not imported" from "the domain is imported but the fact was renamed or
+  # rejected", which a bare `tryEval`-and-fall-back read cannot -- both collapse to the same `null`
+  # otherwise, and for the seven non-ceiling mirrors (where an empty table is *also* a legitimate
+  # answer) that gap means a rename in `nixgpu`/`nixnet`/`nixstorage` looks identical to a host that
+  # simply never adopted the domain. It forces to WHNF only, so a throw nested inside a mirrored
+  # attrset (`gpu`, `storage.disks`, `net`) still surfaces at whoever reads that far in, and a
+  # genuine TYPE error at the owner still arrives here as "unresolved" rather than "rejected" --
+  # every assert-resolved message below names all three possible causes and tells the operator to
+  # evaluate the owner's option directly to tell them apart.
   probeFact = (import ../lib/facts.nix { inherit lib; }).probeFact;
   collectProbes = (import ../lib/facts.nix { inherit lib; }).collectProbes;
 
   # One probe per level-1 fact. `arch`/`cores`/`ram.totalMiB` are the three CEILINGS this module's
-  # own arithmetic divides against (see the ASSERT-RESOLVED assertions below, which read `.value`
-  # exactly as they read `mirrorOf`'s result before) -- deliberately NOT folded into
-  # `extraFactWarnings` below, because those three already get a louder, conditional report (an
-  # assertion, gated on something actually depending on the ceiling) and adding an unconditional
-  # warning beside it would be noise on top of a build failure. The other seven get a warning here
-  # for the first time -- see `extraFactWarnings`' own comment for why that is safe to add
-  # unconditionally.
+  # own arithmetic divides against (see the ASSERT-RESOLVED assertions below, which read `.value`)
+  # -- deliberately NOT folded into `extraFactWarnings` below, because those three already get a
+  # louder, conditional report (an assertion, gated on something actually depending on the
+  # ceiling) and an unconditional warning beside it would be noise on top of a build failure.
   archProbe = probeFact { inherit config; namespace = "nixcpu"; path = [ "arch" ]; fallback = null; };
   microarchProbe = probeFact { inherit config; namespace = "nixcpu"; path = [ "microarch" ]; fallback = null; };
   coresProbe = probeFact { inherit config; namespace = "nixcpu"; path = [ "cores" ]; fallback = null; };
@@ -199,31 +114,34 @@ let
   coreTypesProbe = probeFact { inherit config; namespace = "nixcpu"; path = [ "coreTypes" ]; fallback = null; };
   schedulerProbe = probeFact { inherit config; namespace = "nixcpu"; path = [ "scheduler" ]; fallback = null; };
   ramTotalProbe = probeFact { inherit config; namespace = "nixram"; path = [ "hardware" "totalMiB" ]; fallback = null; };
+  # `nixgpu`, NOT `nixgpu.stableDevicePaths`, and deliberately so -- this one is the exception to the
+  # owner-at-the-module-boundary rule the other probes follow. Pushing the owner deeper buys accuracy
+  # about "not composed here" and gives up detection of a rename AT that depth, and for nixgpu that
+  # trade goes the wrong way: its only other module (`kernel`) is documented as not yet extracted, so
+  # composing nixgpu today IS composing stableDevicePaths and the partial-composition case does not
+  # exist -- while a rename of `stableDevicePaths.devices` is real, has a decoy in checks/, and would
+  # go silent under the deeper owner. Revisit if `kernel` ever ships as a separately-composable module.
   gpuProbe = probeFact { inherit config; namespace = "nixgpu"; path = [ "stableDevicePaths" "devices" ]; fallback = { }; };
-  disksProbe = probeFact { inherit config; namespace = "nixstorage"; path = [ "disks" ]; fallback = { }; };
-  netProbe = probeFact { inherit config; namespace = "nixnet"; path = [ "interfaces" ]; fallback = { }; };
+  disksProbe = probeFact { inherit config; namespace = "nixstorage.disks"; path = [ ]; fallback = { }; };
+  netProbe = probeFact { inherit config; namespace = "nixnet.interfaces"; path = [ ]; fallback = { }; };
 
-  # The seven mirrors with no ceiling arithmetic behind them at all -- nothing here previously
-  # noticed if `nixcpu.threads`/`microarch`/`coreTypes`/`scheduler` or `nixgpu`/`nixstorage`/
-  # `nixnet`'s own tables were renamed out from under this module, because an empty result is
-  # ALSO their legitimate, common answer (most hosts have no GPU; plenty never set a scheduler).
-  # Safe to warn unconditionally, unlike the three ceilings, but for two DIFFERENT reasons rather
-  # than one blanket one:
+  # The seven mirrors with no ceiling arithmetic behind them -- an empty result is ALSO their
+  # legitimate, common answer (most hosts have no GPU; plenty never set a scheduler), so they warn
+  # unconditionally rather than assert, for two different reasons:
   #
   #   `microarch`/`coreTypes`/`scheduler`/`gpu`/`disks`/`net` each have a real default upstream
   #   (`nixgpu.stableDevicePaths.devices = { }`, `nixcpu.microarch = null`, ... -- see
   #   `checks/domain-stubs.nix`), so "composed, never stated" already resolves CLEANLY through that
-  #   default and never reaches `probeFact`'s unresolved branch at all; only a genuine rename or a
-  #   rejected value does, which is exactly the gap `experiments/003` logged as unclosed.
+  #   default and never reaches `probeFact`'s unresolved branch; only a genuine rename or a
+  #   rejected value does.
   #
   #   `threads` shares `cores`/`arch`'s OWN trait instead -- no default upstream, required whenever
-  #   `nixcpu.enable` is true (see nixcpu's own `modules/nixcpu.nix`) -- so "composed, never stated"
-  #   reaches the unresolved branch for `threads` exactly as it would for a rename. Unlike
-  #   `cores`/`arch`, nothing in this module ever divides against `threads` (the CPU oversubscription
-  #   check below is explicitly against `cores`, never `threads`), so there is no ceiling to gate an
-  #   assertion on -- warning unconditionally, the same as the six genuinely-defaulted fields, is the
-  #   only way an operator ever learns their `nixhost.resources.cpu.threads` mirror is resolving to
-  #   `null` instead of the thread count nixcpu requires them to state.
+  #   `nixcpu.enable` is true -- so "composed, never stated" reaches the unresolved branch for
+  #   `threads` exactly as it would for a rename. Unlike `cores`/`arch`, nothing here ever divides
+  #   against `threads` (the CPU oversubscription check below is against `cores`, never `threads`),
+  #   so there is no ceiling to gate an assertion on -- warning unconditionally is the only way an
+  #   operator learns their `nixhost.resources.cpu.threads` mirror resolved to `null` instead of
+  #   the thread count nixcpu requires them to state.
   extraFactWarnings = (collectProbes [
     microarchProbe
     threadsProbe
@@ -457,12 +375,8 @@ let
   # `host.vm1.pod1` rather than just "some environment". At depth 3 in a tree of a dozen
   # environments, a message that cannot say WHERE is a message nobody can act on.
 
-  # ONE traversal, feeding every check below. An earlier draft of this walked the tree twice --
-  # once for GPU claims and once, separately, inside the overcommit check -- and passed `null` as
-  # a stand-in for "the host" so the two could share a ceiling function. Two traversals of the
-  # same tree is two places for a depth bug to hide, and the null-as-host trick meant the host
-  # was not really a node like the others. Both are gone: the host is now simply the root
-  # container, and everything derives from a single list.
+  # ONE traversal feeds every check below, host and children alike as nodes of a single list --
+  # two traversals of the same tree would be two places for a depth bug to hide.
 
   # Every CONTAINER of environments, root first, then each environment that itself hosts more.
   # `ceilings` is what that container has to give out; `children` is what claims it.
@@ -668,11 +582,9 @@ let
   #
   # Reachable precisely BECAUSE the mirrors resolve through `lib.probeFact`: nixcpu declares `arch`
   # with no default, so without that collapse an unstated `arch` would abort evaluation with the
-  # module system's own message instead of arriving here as `null`, and this assertion would be the
-  # unreachable half of a pair (which is what an earlier draft of this module measured, before
-  # `mirrorOf` -- `probeFact`'s own predecessor, local to this file -- existed). A host with a
-  # microarch and no arch is a host nixcpu itself only refuses when `nixcpu.enable` is true, so
-  # this is the check that covers the fact-only case.
+  # module system's own message instead of arriving here as `null`, and this assertion would be
+  # unreachable. A host with a microarch and no arch is a host nixcpu itself only refuses when
+  # `nixcpu.enable` is true, so this is the check that covers the fact-only case.
   archUnresolved = cfg.resources.cpu.microarch != null && cfg.resources.cpu.arch == null;
 
   # ── A mirror with a SECOND definition, caught where it was typed ─────────────────────────────
@@ -693,15 +605,13 @@ let
   # that question gets asked, because the module system reports a readOnly violation by throwing
   # from the option itself rather than by returning anything inspectable.
   #
-  # ⚠ THIS ONLY WORKS BECAUSE THE DEFAULTS GO THROUGH `lib.probeFact`, and finding that out (via
-  # this file's own predecessor, `mirrorOf`) is what bought that mechanism its `tryEval` in the
-  # first place. Reading `opt.definitions` is not the cheap structural question it looks like: the
-  # module system discharges `mkIf`/`mkMerge` properties while building the definition list, which
-  # FORCES every definition's value -- including the option's own default. With a default that
-  # throws (a domain imported without the fact stated), this check therefore reported a phantom
-  # "you declared this twice" on a host that had declared nothing at all. `probeFact` makes every
-  # default resolve to a value instead of a throw, which leaves the readOnly violation as the only
-  # thing left in here that can throw.
+  # ⚠ THIS ONLY WORKS BECAUSE THE DEFAULTS GO THROUGH `lib.probeFact`. Reading `opt.definitions` is
+  # not the cheap structural question it looks like: the module system discharges `mkIf`/`mkMerge`
+  # properties while building the definition list, which FORCES every definition's value --
+  # including the option's own default. With a default that throws (a domain imported without the
+  # fact stated), this check would report a phantom "you declared this twice" on a host that had
+  # declared nothing at all. `probeFact` makes every default resolve to a value instead of a throw,
+  # which leaves the readOnly violation as the only thing left in here that can throw.
   mirrorOverridden = opt: !(builtins.tryEval (length opt.definitions)).success;
 
   overriddenMirrors = filter (m: mirrorOverridden m.opt)
@@ -845,11 +755,8 @@ in
     resources = {
       # ── CPU: field for field, nixcpu's own `options.nixcpu` ─────────────────────────────────
       #
-      # nixcpu was already a strict superset of everything this block used to declare by hand, so
-      # nothing was dropped in the move and one field was GAINED (`coreTypes`, below) -- the
-      # asymmetry resolved in the only direction it could, since nixcpu is the sole owner of CPU
-      # topology as a fact and this module has no business being the second place a P/E split can
-      # be typed.
+      # nixcpu is the sole owner of CPU topology as a fact; this module has no business being a
+      # second place a P/E split (`coreTypes`, below) can be typed.
       #
       # ⚠ THE TYPES HERE ARE DELIBERATELY LOOSER THAN AT THE OWNER. `arch` is `nullOr str` where
       # nixcpu closes it to a two-member enum, and `microarch` is `nullOr str` where nixcpu closes
@@ -1336,13 +1243,10 @@ in
       })
       gpuConflicts;
 
-  # THE GPU DEVICE-COMPLETENESS ASSERTION THAT USED TO LIVE HERE IS GONE, and its absence is the
-  # change, not an omission. It read every declared device's `vendor`/`pciId`/`vramMiB` and failed on
-  # an empty one -- a check that existed only to force the required fields of THIS module's own GPU
-  # submodule to be read, back when this module declared that submodule. `resources.gpu` is now an
-  # opaque mirror of `nixgpu.stableDevicePaths.devices`, which declares all three as required and
-  # enforces them itself, at the one place that also knows what a fourth field would mean. Keeping a
-  # copy here would have meant this repo failing to evaluate the day nixgpu renames or adds a field,
-  # over a table it does not own -- see `resources.gpu`'s own description.
+  # No GPU device-completeness assertion here, deliberately: `resources.gpu` is an opaque mirror of
+  # `nixgpu.stableDevicePaths.devices`, which declares `vendor`/`pciId`/`vramMiB` as required and
+  # enforces them itself, at the one place that also knows what a fourth field would mean. A copy
+  # of that check here would fail this repo's build the day nixgpu renames or adds a field to a
+  # table it does not own -- see `resources.gpu`'s own description.
 }
 

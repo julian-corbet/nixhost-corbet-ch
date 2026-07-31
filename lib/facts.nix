@@ -1,8 +1,8 @@
 # lib/facts.nix -- `lib.probeFact`
 #
 # THE DEFECT CLASS, named precisely: a defensive cross-namespace read of the shape
-# `config.nixfoo.bar or fallback` -- the idiom this whole family uses, `modules/nixhost.nix`'s own
-# `mirrorOf` included -- conflates THREE states that are not one state:
+# `config.nixfoo.bar or fallback` -- the idiom this whole family uses -- conflates THREE states
+# that are not one state:
 #
 #   (a) the sibling module (`nixfoo`) is not composed on this host at all   -- legitimate, silent
 #   (b) it IS composed, and the fact is genuinely absent/empty              -- legitimate, silent
@@ -14,8 +14,7 @@
 # shape cost real weeks of dead features when `nixstorage.layout` moved underneath a defensive
 # reader elsewhere in this family, nearly repeated itself on the `nixid` -> `nixiam` rename, and
 # was caught live in `nixllm` the same week this file was written. This module is the fix, built
-# once so the other repos that each grew their own version of `mirrorOf` can read a fact through
-# this instead.
+# once so no repo in this family has to reinvent it.
 #
 # ── THE TWO TRAPS A NAIVE IMPLEMENTATION FALLS INTO, both measured, not theorised ─────────────
 #
@@ -37,8 +36,7 @@
 # cores`, `nixcpu.arch` in this family): the module system counts the option's own declaration as
 # already having an attribute at that path, definition or not, so `or` finds `y` PRESENT and never
 # reaches its fallback at all. Forcing it then throws "the option `...' is used but not defined",
-# uncaught, straight out of the option's own default. `mirrorOf` in `modules/nixhost.nix` already
-# discovered this the hard way (see that file's own header).
+# uncaught, straight out of the option's own default.
 #
 # THE FIX is the same one: because `attemptLeaf` wraps the ENTIRE expression -- including a leaf
 # that exists structurally but throws the moment something forces it -- in `tryEval`, this throw
@@ -65,13 +63,11 @@
 #
 # ── WARN BY DEFAULT, ASSERT ON REQUEST ────────────────────────────────────────────────────────
 #
-# An assertion that fires on every host that has not yet adopted a sibling module the way this
-# repo's own ceiling checks do is exactly how `mirrorOf`'s design ended up collapsing (a) and (c)
-# in the first place (see `modules/nixhost.nix`'s own header on MIRROR + ASSERT-RESOLVED): making
-# the loud case the default makes the option unadoptable, so a caller pays for that loudness only
-# when it explicitly asks (`mode = "assert"`) for a read it considers load-bearing. `mode = "warn"`
-# is therefore the default, rendering into `config.warnings` (non-fatal, shown at build time) --
-# never `config.assertions` -- unless the caller opts in.
+# An assertion firing on every host that has not yet adopted a sibling module would make the
+# option unadoptable, so a caller pays for that loudness only when it explicitly asks
+# (`mode = "assert"`) for a read it considers load-bearing. `mode = "warn"` is therefore the
+# default, rendering into `config.warnings` (non-fatal, shown at build time) -- never
+# `config.assertions` -- unless the caller opts in.
 { lib }:
 
 let
@@ -86,6 +82,21 @@ let
       (lib.attrByPath path (throw "lib.probeFact: leaf did not resolve") namespaceValue);
 
   normalisePath = path: if builtins.isList path then path else lib.splitString "." path;
+
+  # `namespace` accepts a PATH, not only a single top-level name, and the difference is not
+  # cosmetic -- it decides state (a) correctly on a host that composes only part of a sibling repo.
+  #
+  # Sibling projects ship several independently-composable modules under ONE namespace: a host can
+  # import an identity repo's `lldap` and `pocket-id` modules and not its `posix` module. A reader
+  # of `nixiam.posix.identities` on such a host asks `config ? nixiam` -- true, because lldap
+  # declared it -- concludes the sibling IS composed, finds the leaf missing, and reports state (c),
+  # "the option moved or was renamed". Nothing moved. `nixiam.posix` was never composed.
+  #
+  # That was live: it fired twice on a production mail host, and its message sent a reader hunting
+  # for a rename that does not exist. Naming the OWNER subtree -- `[ "nixiam" "posix" ]` -- puts the
+  # composed-test where the module boundary actually is. A single-segment namespace is just the
+  # one-element case, so every existing call site keeps its exact meaning.
+  normaliseOwner = ns: if builtins.isList ns then ns else lib.splitString "." ns;
 in
 rec {
   # { config, namespace, path, fallback, mode ? "warn" }:
@@ -93,9 +104,21 @@ rec {
   #   config     -- the attrset to read from (a real NixOS/system-manager/nix-darwin `config`, or
   #                 plain data in a test -- this function touches nothing module-system-specific,
   #                 only `?` and ordinary attribute access, so either works identically).
-  #   namespace  -- the SINGLE top-level attribute name whose presence means "the sibling module
-  #                 is composed here", e.g. "nixcpu". Never a dotted path: state (a) is a question
-  #                 about one sibling module, and `path` below is where the depth belongs.
+  #   namespace  -- the OWNER: the attribute path whose presence means "the module that declares
+  #                 this fact is composed here". A single name (`"nixcpu"`) where a repo ships one
+  #                 module, or a path -- list or dotted string -- where it ships several under one
+  #                 namespace (`"nixiam.posix"`, `[ "nixstorage" "delivery" ]`). Put the boundary
+  #                 at the MODULE, not at the repo: a host can compose an identity repo's lldap
+  #                 module and not its posix module, and probing the bare namespace then reports
+  #                 "the fact was renamed" about a host that simply never imported it.
+  #
+  #                 KNOWN LIMIT, stated rather than hidden: a rename of the owner's own deepest
+  #                 segment (`nixiam.posix` -> `nixiam.unix`) is indistinguishable from "posix was
+  #                 never composed here" -- both leave nothing at that path. This function reports
+  #                 absent, i.e. silence, because a partially-composed sibling is the common and
+  #                 legitimate case while an owner rename is caught by the consuming repo's own
+  #                 checks, which compose the real producer. Choose the owner accordingly: deeper
+  #                 buys accuracy about (a) and gives up detection of a rename AT that depth.
   #   path       -- the leaf's path INSIDE that namespace, as a list (`[ "cores" ]`) or a
   #                 dot-separated string (`"hardware.totalMiB"`) -- both spellings normalise to
   #                 the same list before use, so a caller uses whichever reads better at its own
@@ -127,15 +150,30 @@ rec {
       "lib.probeFact: mode must be \"warn\" or \"assert\", got ${builtins.toJSON mode} -- a third, silently-ignored mode would be this same defect class one layer up.";
     let
       pathList = normalisePath path;
+      ownerList = normaliseOwner namespace;
       dotted = lib.concatStringsSep "." pathList;
-      optionPath = "${namespace}.${dotted}";
+      ownerDotted = lib.concatStringsSep "." ownerList;
+      # An empty `path` is legitimate and means "the owner IS the fact" -- the shape a consumer needs
+      # when the thing it reads is itself a whole module's single option (`nixstorage.disks`,
+      # `nixdesktop.startup`). Without this branch the message renders a trailing dot.
+      optionPath = if pathList == [ ] then ownerDotted else "${ownerDotted}.${dotted}";
 
-      # STATE (a), decided before anything about `nixfoo` is opened -- see this file's header.
-      composed = config ? ${namespace};
+      # STATE (a), decided before anything under the owner is opened -- see this file's header.
+      #
+      # Wrapped in tryEval for the same reason `attemptLeaf` is. A single-segment owner only ever
+      # did `config ? ns`, which forces nothing. A MULTI-segment owner must force every segment
+      # except the last to WHNF just to test for the next key -- so an intermediate namespace whose
+      # value throws (a mandatory option left unset, a value its own type rejected) would take the
+      # whole evaluation down from inside a probe whose entire purpose is to survive that and
+      # report it. An owner that cannot even be tested for presence is treated as absent, which is
+      # the same conservative answer this function gives everywhere else it cannot see.
+      composedAttempt = builtins.tryEval (lib.hasAttrByPath ownerList config);
+      composed = composedAttempt.success && composedAttempt.value;
 
       # Lazy on the `if` itself, not merely inside `attemptLeaf`: when `composed` is false this
-      # binding is never forced, so `config.${namespace}` is never touched at all.
-      attempt = if composed then attemptLeaf pathList config.${namespace} else null;
+      # binding is never forced, so the owner subtree is never touched at all.
+      attempt =
+        if composed then attemptLeaf pathList (lib.getAttrFromPath ownerList config) else null;
 
       resolved = composed && attempt.success;
 
@@ -154,9 +192,9 @@ rec {
         in if attempt'.success then attempt'.value else "<a value this probe cannot render>";
 
       message = ''
-        ${optionPath} did not resolve, even though the `${namespace}` namespace IS composed on
+        ${optionPath} did not resolve, even though the `${ownerDotted}` namespace IS composed on
         this host. One of three things is true: the option moved or was renamed somewhere inside
-        `${namespace}`, it was declared with no default and never given a value, or the value it
+        `${ownerDotted}`, it was declared with no default and never given a value, or the value it
         was given was rejected by its own type -- evaluate `config.${optionPath}` directly to see
         which. Falling back to ${fallbackRendered} in the meantime: that is what this host is
         actually doing right now, not what its configuration appears to say.
