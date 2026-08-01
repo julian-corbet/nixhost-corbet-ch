@@ -10,7 +10,7 @@
 # `nixhost.resources.*` is not settable: each field is a `readOnly` mirror of the domain repo that
 # owns the fact. So a fixture states `nixcpu.cores = 16`, never `nixhost.resources.cpu.cores = 16`,
 # and gets those option paths from `./domain-stubs.nix` -- see that file for why a stub rather than
-# five checks-only flake inputs. Two eval entry points exist, and the difference between them is
+# six checks-only flake inputs. Two eval entry points exist, and the difference between them is
 # itself under test:
 #
 #   `nixosBuildFails`     -- the domains' option surfaces ARE present (the ordinary host).
@@ -45,7 +45,11 @@
 #      claimed `"exclusive"` by a different environment does not (no cross-device conflict).
 #   6. THE MIRRORS: every level-1 field equals the domain fact it mirrors; setting one directly is
 #      a build failure, not an override; and with no domain module present at all they resolve to
-#      `null`/`{ }` and the host still builds.
+#      `null`/`{ }` and the host still builds. `resources.audio` (nixaudio's sink catalogue) is
+#      mirrored the same way as `resources.gpu`, and deliberately carries NO claim/access shape at
+#      the environment level -- a PipeWire sink fans out to many streams through a mixer, so it has
+#      no `EBUSY`-shaped exclusivity for an environment to claim (see that option's own
+#      description, and the module header's note on where the GPU/audio analogy breaks).
 #   7. THE CEILINGS (MIRROR + ASSERT-RESOLVED): an environment claiming RAM or CPU on a host whose
 #      total/core-count did not resolve FAILS, and so does a microarch with no arch to check against
 #      -- the specific regression this group exists for is the opposite, a green build in which the
@@ -55,10 +59,11 @@
 #      fully-populated host and a bare one both produce zero warnings; a domain composed with
 #      nothing stated warns exactly once, for the one non-ceiling field (`nixcpu.threads`) that
 #      genuinely has no upstream default; and a domain whose real option surface renamed the exact
-#      path a mirror reads (`nixgpu.stableDevicePaths.devices` -> `nixgpu.inventory`) warns exactly
-#      once, naming the option path, the namespace, and the fallback value in use, WITHOUT failing
-#      the build -- proven through the real `nixhostModule`, not only `lib/facts.nix`'s own
-#      function-level and synthetic-integration fixtures.
+#      path a mirror reads (`nixgpu.stableDevicePaths.devices` -> `nixgpu.inventory`, and
+#      `nixaudio.fabric.catalogue` -> `nixaudio.fabric.sinks`) warns exactly once, naming the
+#      option path, the namespace, and the fallback value in use, WITHOUT failing the build --
+#      proven through the real `nixhostModule`, not only `lib/facts.nix`'s own function-level and
+#      synthetic-integration fixtures.
 #
 # Plus backend parity (NixOS vs. system-manager agree on the same fixtures) and the shipped
 # `examples/host` evaluating cleanly on its own.
@@ -131,6 +136,19 @@ let
       vendor = "amd";
       pciId = "0x1002";
       vramMiB = 16384;
+    };
+  };
+
+  # One catalogued sink, mirroring `oneAmdCard`'s shape one field family over -- the fabric's
+  # opinion of what exists, not what this host itself claims (there is no claim shape for audio;
+  # see `resources.audio`'s own description for why).
+  oneAudioSink = {
+    nixaudio.fabric.catalogue.headset0 = {
+      origin = "elitebook";
+      peer = "elitebook";
+      device = "alsa_output.usb-headset";
+      description = "USB headset";
+      known = true;
     };
   };
 
@@ -474,6 +492,13 @@ let
       addresses.lan = "192.0.2.10";
     };
     nixstorage.disks.pool0 = { device = "/dev/disk/by-id/ata-EXAMPLE_A"; };
+    nixaudio.fabric.catalogue.headset0 = {
+      origin = "elitebook";
+      peer = "elitebook";
+      device = "alsa_output.usb-headset";
+      description = "USB headset";
+      known = true;
+    };
   };
 
   everyMirrorPopulated = hostWith [ everyFactStated ] { };
@@ -491,6 +516,9 @@ let
     resources.gpu.gpu0 = { vendor = "amd"; pciId = "0x1002"; vramMiB = 16384; };
   };
   netSetDirectly = hostWith baseFacts { resources.net.lan0 = { mac = "aa:bb:cc:dd:ee:ff"; }; };
+  audioSetDirectly = hostWith baseFacts {
+    resources.audio.headset0 = { origin = "elitebook"; peer = "elitebook"; device = "alsa_output.usb-headset"; description = "USB headset"; known = true; };
+  };
 
   # ── Ceiling fixtures: MIRROR + ASSERT-RESOLVED ────────────────────────────────────────────────
 
@@ -545,13 +573,13 @@ let
   #
   # `checks/facts.nix` proves `lib.probeFact` at the function level, and `checks/facts-integration.nix`
   # proves it against a real NixOS eval of its OWN small stand-in fixtures. Neither ever composes the
-  # real `modules/nixhost.nix` -- the ten actual probe call sites (`archProbe` through `netProbe`) and
-  # the `config.warnings = extraFactWarnings;` line that splices their result into this host's own
-  # build -- so neither proves the WIRING is right. A caller could get any one of those ten calls
-  # backwards (wrong `namespace`, wrong `path`, a probe left out of `extraFactWarnings` entirely) and
-  # every test above this line would stay green. These fixtures close that gap, reusing whatever is
-  # already defined above and adding only the one decoy nothing above provides: a domain whose real
-  # option surface renamed the exact path a mirror reads.
+  # real `modules/nixhost.nix` -- the eleven actual probe call sites (`archProbe` through
+  # `audioProbe`) and the `config.warnings = extraFactWarnings;` line that splices their result into
+  # this host's own build -- so neither proves the WIRING is right. A caller could get any one of
+  # those eleven calls backwards (wrong `namespace`, wrong `path`, a probe left out of
+  # `extraFactWarnings` entirely) and every test above this line would stay green. These fixtures
+  # close that gap, reusing whatever is already defined above and adding the decoys nothing above
+  # provides: a domain whose real option surface renamed the exact path a mirror reads.
   #
   # `nixgpu` genuinely composed (`inventory` exists, and resolves cleanly on its own), but
   # `stableDevicePaths.devices` -- the path `gpuProbe` still asks for -- is gone: the real shape
@@ -571,6 +599,26 @@ let
   # Deliberately through `evalNixosWith` directly, never `evalNixos`/`evalNixosBare`: this fixture
   # composes its OWN, deliberately-renamed nixgpu surface, not `domainStubs`' faithful one.
   nixgpuRenamedEval = evalNixosWith [ nixgpuRenamedStub nixgpuRenamedHost ];
+
+  # The same decoy, one repo over: `nixaudio` genuinely composed (`fabric.sinks` exists, and
+  # resolves cleanly on its own), but `fabric.catalogue` -- the path `audioProbe` still asks for --
+  # is gone. `audioProbe` is this repo's newest attrset-fallback mirror, so it gets the identical
+  # proof `gpuProbe` already has, not a weaker one: a rename this module cannot see is exactly the
+  # failure mode `lib.probeFact` exists to turn loud, and "the mirror is new" is no exemption from
+  # that.
+  nixaudioRenamedStub = { lib, ... }: {
+    options.nixaudio.fabric.sinks = lib.mkOption {
+      type = lib.types.attrsOf lib.types.anything;
+      default = { };
+      description = "Stand-in for nixaudio having renamed `fabric.catalogue` to `fabric.sinks`.";
+    };
+  };
+
+  nixaudioRenamedHost = { nixhost = { name = "test-host"; stance.backend = "nixos"; }; };
+
+  # Deliberately through `evalNixosWith` directly, same reasoning as `nixgpuRenamedEval` above:
+  # this fixture composes its OWN, deliberately-renamed nixaudio surface, not `domainStubs`' one.
+  nixaudioRenamedEval = evalNixosWith [ nixaudioRenamedStub nixaudioRenamedHost ];
 
   # ══ Results ════════════════════════════════════════════════════════════════════════════════
 
@@ -732,8 +780,8 @@ let
   #
   # These are the tests that would have been impossible before, because the facts were declared
   # here: an equality check between a mirror and its source only means something once there IS a
-  # source. Note that `resources.gpu`/`net`/`storage.disks` are compared as whole attrsets --
-  # nixhost mirrors them opaquely on purpose, so the test asserts identity, not field-by-field
+  # source. Note that `resources.gpu`/`audio`/`net`/`storage.disks` are compared as whole attrsets
+  # -- nixhost mirrors them opaquely on purpose, so the test asserts identity, not field-by-field
   # agreement it has no business knowing about.
   mirrorResults = [
     (check "mirror/cpu-scalars-mirror-nixcpu"
@@ -759,6 +807,18 @@ let
       (mirrored.gpu == { gpu0 = { vendor = "amd"; pciId = "0x1002"; vramMiB = 16384; }; })
       "the device table must be nixgpu's own, passed through unchanged -- including fields nixhost never reads")
 
+    (check "mirror/audio-catalogue-mirrors-nixaudio"
+      (mirrored.audio == {
+        headset0 = {
+          origin = "elitebook";
+          peer = "elitebook";
+          device = "alsa_output.usb-headset";
+          description = "USB headset";
+          known = true;
+        };
+      })
+      "the sink catalogue must be nixaudio's own (nixaudio.fabric.catalogue), passed through unchanged -- including fields nixhost never reads, same as the GPU device table above")
+
     (check "mirror/net-interfaces-mirror-nixnet"
       (mirrored.net == { lan0 = { mac = "aa:bb:cc:dd:ee:ff"; addresses.lan = "192.0.2.10"; }; })
       "the interface table must be nixnet's own (nixnet.interfaces), passed through unchanged")
@@ -781,8 +841,9 @@ let
         && unmirrored.ram.totalMiB == null
         && unmirrored.gpu == { }
         && unmirrored.net == { }
-        && unmirrored.storage.disks == { })
-      "with no domain module present at all, every defensive read must take its fallback -- a host may import nixhost without owning nixcpu/nixram/nixgpu/nixnet/nixstorage")
+        && unmirrored.storage.disks == { }
+        && unmirrored.audio == { })
+      "with no domain module present at all, every defensive read must take its fallback -- a host may import nixhost without owning nixcpu/nixram/nixgpu/nixnet/nixstorage/nixaudio")
 
     (check "mirror/host-with-no-domains-builds-fine"
       (!(nixosBuildFailsBare noDomainsAtAll))
@@ -799,6 +860,10 @@ let
     (check "mirror/setting-net-directly-fails-the-build"
       (nixosBuildFails netSetDirectly)
       "nixhost.resources.net is readOnly -- an interface declared here instead of in nixnet must fail the build")
+
+    (check "mirror/setting-audio-directly-fails-the-build"
+      (nixosBuildFails audioSetDirectly)
+      "nixhost.resources.audio is readOnly -- a sink declared here instead of in nixaudio must fail the build, same as every other mirror")
   ];
 
   # ── The ceilings: MIRROR + ASSERT-RESOLVED ───────────────────────────────────────────────────
@@ -915,7 +980,7 @@ let
 
     (check "fact-wiring/no-domains-at-all-has-no-warnings"
       ((evalNixosBare noDomainsAtAll).warnings == [ ])
-      "state (a), wired through the real module: a host importing none of the five domains must report zero warnings -- absence is silent, not merely non-fatal")
+      "state (a), wired through the real module: a host importing none of the six domains must report zero warnings -- absence is silent, not merely non-fatal")
 
     (check "fact-wiring/domain-composed-nothing-stated-warns-once-for-the-one-mandatory-extra-field"
       (let w = (evalNixos domainsImportedNothingStated).warnings; in
@@ -932,7 +997,24 @@ let
 
     (check "fact-wiring/real-rename-of-a-non-ceiling-mirror-does-not-fail-the-build"
       (!(buildFails nixgpuRenamedEval))
-      "requirement 3: warn is the default. A renamed non-ceiling mirror must never fail the build on its own through the real module's wiring -- only mode = \"assert\" (which this module does not use for these seven) would do that")
+      "requirement 3: warn is the default. A renamed non-ceiling mirror must never fail the build on its own through the real module's wiring -- only mode = \"assert\" (which this module does not use for these eight) would do that")
+
+    # The audio slot's own decoy, identical shape to nixgpu's above and reusing the same
+    # reasoning: `resources.audio` is brand new in this module, and "just added" is exactly the
+    # state in which a wrong `namespace`/`path` at the call site is most likely and least likely
+    # to have been noticed yet -- this proves the wiring, not just `lib.probeFact` in the
+    # abstract.
+    (check "fact-wiring/real-rename-of-the-audio-catalogue-warns-through-the-real-module"
+      (let w = nixaudioRenamedEval.warnings; in
+        lib.length w == 1
+        && lib.hasInfix "nixaudio.fabric.catalogue" (lib.head w)
+        && lib.hasInfix "nixaudio" (lib.head w)
+        && lib.hasInfix "{ }" (lib.head w))
+      "nixaudio genuinely composed (as `fabric.sinks`, not `fabric.catalogue`) through the REAL nixhostModule -- if `audioProbe`'s call site ever gets its namespace or path wrong, or drops out of `extraFactWarnings`, this is what stops reporting it. The one warning must name the option path, the namespace, and the fallback (`{ }`) actually in use, per requirement 2")
+
+    (check "fact-wiring/real-rename-of-the-audio-catalogue-does-not-fail-the-build"
+      (!(buildFails nixaudioRenamedEval))
+      "requirement 3, audio slot: a renamed non-ceiling mirror must never fail the build on its own through the real module's wiring -- `resources.audio` carries no ceiling and no assert-resolved companion, same as `resources.gpu`")
   ];
 
   results = moduleResults ++ mirrorResults ++ ceilingResults ++ backendParityChecks ++ exampleResults ++ hostsResults ++ factsResults ++ factsIntegrationResults ++ factWiringResults;

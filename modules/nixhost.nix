@@ -27,11 +27,11 @@
 #
 # LEVEL 1 IS A MIRROR, NOT A DECLARATION. Every option under `resources` is `readOnly`, defaulted
 # defensively out of the repo that OWNS the fact (`nixcpu`, `nixram`, `nixgpu`, `nixnet`,
-# `nixstorage`) via `lib.probeFact` (`../lib/facts.nix`) -- never a flake input on the domain, so a
-# domain repo stays usable by someone who has never heard of nixhost, and a host can import nixhost
-# while owning only some domains. `readOnly` makes "one spot per fact" structural: a host that sets
-# one of these mirrors has set it twice and gets a build failure naming the option to set instead,
-# rather than a silent override.
+# `nixstorage`, `nixaudio`) via `lib.probeFact` (`../lib/facts.nix`) -- never a flake input on the
+# domain, so a domain repo stays usable by someone who has never heard of nixhost, and a host can
+# import nixhost while owning only some domains. `readOnly` makes "one spot per fact" structural: a
+# host that sets one of these mirrors has set it twice and gets a build failure naming the option
+# to set instead, rather than a silent override.
 #
 # `probeFact` tells apart "the domain isn't composed here" from "the domain is composed but the
 # fact was renamed or rejected by its own type" -- both would otherwise collapse to the same `null`
@@ -92,11 +92,12 @@ let
   # Every level-1 mirror's default goes through `lib.probeFact` (`../lib/facts.nix`): it tells
   # apart "the domain is not imported" from "the domain is imported but the fact was renamed or
   # rejected", which a bare `tryEval`-and-fall-back read cannot -- both collapse to the same `null`
-  # otherwise, and for the seven non-ceiling mirrors (where an empty table is *also* a legitimate
-  # answer) that gap means a rename in `nixgpu`/`nixnet`/`nixstorage` looks identical to a host that
-  # simply never adopted the domain. It forces to WHNF only, so a throw nested inside a mirrored
-  # attrset (`gpu`, `storage.disks`, `net`) still surfaces at whoever reads that far in, and a
-  # genuine TYPE error at the owner still arrives here as "unresolved" rather than "rejected" --
+  # otherwise, and for the eight non-ceiling mirrors (where an empty table is *also* a legitimate
+  # answer) that gap means a rename in `nixgpu`/`nixnet`/`nixstorage`/`nixaudio` looks identical to
+  # a host that simply never adopted the domain. It forces to WHNF only, so a throw nested inside a
+  # mirrored attrset (`gpu`, `storage.disks`, `net`, `audio`) still surfaces at whoever reads that
+  # far in, and a genuine TYPE error at the owner still arrives here as "unresolved" rather than
+  # "rejected" --
   # every assert-resolved message below names all three possible causes and tells the operator to
   # evaluate the owner's option directly to tell them apart.
   probeFact = (import ../lib/facts.nix { inherit lib; }).probeFact;
@@ -124,16 +125,28 @@ let
   gpuProbe = probeFact { inherit config; namespace = "nixgpu"; path = [ "stableDevicePaths" "devices" ]; fallback = { }; };
   disksProbe = probeFact { inherit config; namespace = "nixstorage.disks"; path = [ ]; fallback = { }; };
   netProbe = probeFact { inherit config; namespace = "nixnet.interfaces"; path = [ ]; fallback = { }; };
+  # `nixaudio.fabric.catalogue`, following the DEFAULT owner-subtree convention `disksProbe`/
+  # `netProbe` already use above, NOT `gpuProbe`'s exception: nixaudio is not one flat option
+  # surface the way nixgpu currently is (see the workstation story's own split table --
+  # catalogue/permissions/priorities are already three distinct concerns nixaudio owns), so there
+  # is no basis here for assuming "composing nixaudio at all IS composing the fabric catalogue" the
+  # way `gpuProbe`'s comment argues for nixgpu today. Naming the subtree that actually owns
+  # `catalogue` keeps this probe's reported option path honest about where the fact lives.
+  #
+  # Mirrors `nixaudio.fabric.catalogue` ONLY -- see `resources.audio`'s own description for why
+  # `nixaudio.resolvedDevices` (a real, separate, existing option) is deliberately NOT mirrored
+  # here: it answers a permissions question, not an existence one, and is nixaudio's alone to read.
+  audioProbe = probeFact { inherit config; namespace = "nixaudio.fabric.catalogue"; path = [ ]; fallback = { }; };
 
-  # The seven mirrors with no ceiling arithmetic behind them -- an empty result is ALSO their
+  # The eight mirrors with no ceiling arithmetic behind them -- an empty result is ALSO their
   # legitimate, common answer (most hosts have no GPU; plenty never set a scheduler), so they warn
   # unconditionally rather than assert, for two different reasons:
   #
-  #   `microarch`/`coreTypes`/`scheduler`/`gpu`/`disks`/`net` each have a real default upstream
-  #   (`nixgpu.stableDevicePaths.devices = { }`, `nixcpu.microarch = null`, ... -- see
-  #   `checks/domain-stubs.nix`), so "composed, never stated" already resolves CLEANLY through that
-  #   default and never reaches `probeFact`'s unresolved branch; only a genuine rename or a
-  #   rejected value does.
+  #   `microarch`/`coreTypes`/`scheduler`/`gpu`/`disks`/`net`/`audio` each have a real default
+  #   upstream (`nixgpu.stableDevicePaths.devices = { }`, `nixaudio.fabric.catalogue = { }`,
+  #   `nixcpu.microarch = null`, ... -- see `checks/domain-stubs.nix`), so "composed, never stated"
+  #   already resolves CLEANLY through that default and never reaches `probeFact`'s unresolved
+  #   branch; only a genuine rename or a rejected value does.
   #
   #   `threads` shares `cores`/`arch`'s OWN trait instead -- no default upstream, required whenever
   #   `nixcpu.enable` is true -- so "composed, never stated" reaches the unresolved branch for
@@ -150,6 +163,7 @@ let
     gpuProbe
     disksProbe
     netProbe
+    audioProbe
   ]).warnings;
 
   # A quantity that must be strictly positive, and may be fractional -- the shape a CPU quota
@@ -625,6 +639,7 @@ let
         { path = "resources.cpu.scheduler"; owner = "nixcpu.scheduler"; opt = r.cpu.scheduler; }
         { path = "resources.ram.totalMiB"; owner = "nixram.hardware.totalMiB"; opt = r.ram.totalMiB; }
         { path = "resources.gpu"; owner = "nixgpu.stableDevicePaths.devices"; opt = r.gpu; }
+        { path = "resources.audio"; owner = "nixaudio.fabric.catalogue"; opt = r.audio; }
         { path = "resources.storage.disks"; owner = "nixstorage.disks"; opt = r.storage.disks; }
         { path = "resources.net"; owner = "nixnet.interfaces"; opt = r.net; }
       ]
@@ -949,6 +964,53 @@ in
         '';
       };
 
+      audio = mkOption {
+        type = types.attrs;
+        readOnly = true;
+        default = audioProbe.value;
+        description = ''
+          A read-only MIRROR of `config.nixaudio.fabric.catalogue` (see nixaudio's own fabric
+          module): every sink this host's audio fabric has enumerated, keyed by a short stable
+          name -- its own devices AND every peer's, mirrored in as ordinary local PipeWire nodes,
+          which is what turns an otherwise-normal local mixer into a cross-host router (see
+          `knowledge/hosts/shared/workstation-story.md` §7c). Each entry carries
+          `origin`/`peer`/`device`/`description`/`known`, per nixaudio's own catalogue submodule.
+          Empty when nixaudio's fabric is not imported here, or when it is and nothing has been
+          catalogued yet; like `gpu` above, an empty catalogue is a legitimate state (a host with
+          no sinks reachable yet) and needs no ASSERT-RESOLVED companion.
+
+          ⚠ MIRRORED OPAQUELY (`types.attrs`), same reasoning as `gpu`: the shape of a catalogue
+          entry is nixaudio's to define and revise, and a submodule here restating
+          `origin`/`peer`/`device`/`description`/`known` would have to be revised in lockstep with
+          a repo this one takes no input on.
+
+          ⚠ NOT `config.nixaudio.resolvedDevices` -- a real, separate, existing nixaudio option
+          (each of its entries carries its own `.source = "usb" | "explicit"`) that answers a
+          DIFFERENT question: which local devices need a permission/udev rule, not which sinks
+          exist and are reachable. Mirroring the wrong one here would silently answer "what can
+          this host route audio to" with "what does this host grant realtime access to" -- two
+          questions that happen to share a keyed-attrset shape and nothing else. `resolvedDevices`
+          stays nixaudio's alone to read; this module has no use for it and mirrors nothing it
+          does not itself need to answer a fact about the machine.
+
+          ⚠ NO ACCESS CLAIM SHAPE HERE, DELIBERATELY -- the one place this option does NOT repeat
+          `resources.gpu`'s own template, and worth stating plainly because the next reader will
+          otherwise assume the symmetry. `environments.<name>.resources.gpu.<name>.access` exists
+          because DRM master is single-owner IN THE KERNEL: a second claimant gets `EBUSY`, so
+          `"exclusive"` models a real, enforceable constraint the hardware itself has. A PipeWire
+          sink has no such constraint -- it is DESIGNED to fan out to arbitrarily many streams
+          through a mixer, all summed, all at once (`3a` in the workstation story: "I output where
+          my ears are and all the inputs are added together"). What audio actually contends over is
+          DEFAULT SELECTION -- a guess about where the human is currently listening -- which is
+          live-graph STATE, decided at connection time and changed by the moment, never
+          Nix-declared config (workstation story §7c's own table: "where this stream goes right
+          now" is the one row owned by "the live graph", not by nixaudio's declared half). There is
+          therefore no ceiling or exclusivity for an environment to claim here, and adding an
+          `access` enum to mirror `resources.gpu`'s shape would model a contention the hardware
+          does not have.
+        '';
+      };
+
       storage = {
         disks = mkOption {
           type = types.attrs;
@@ -1005,12 +1067,13 @@ in
     };
   };
 
-  # The seven non-ceiling mirrors' own report, from `extraFactWarnings` above: a rename or a
+  # The eight non-ceiling mirrors' own report, from `extraFactWarnings` above: a rename or a
   # rejected value inside `nixcpu.threads`/`microarch`/`coreTypes`/`scheduler` or `nixgpu`/
-  # `nixstorage`/`nixnet`'s own tables, on a host where that domain genuinely IS composed. Warnings,
-  # deliberately, never assertions -- these seven have no ceiling arithmetic behind them (see
-  # `extraFactWarnings`' own comment above), so nothing here has enough at stake to fail a build
-  # over; the point is only that an operator who never watches for it now has something to see.
+  # `nixstorage`/`nixnet`/`nixaudio`'s own tables, on a host where that domain genuinely IS
+  # composed. Warnings, deliberately, never assertions -- these eight have no ceiling arithmetic
+  # behind them (see `extraFactWarnings`' own comment above), so nothing here has enough at stake
+  # to fail a build over; the point is only that an operator who never watches for it now has
+  # something to see.
   config.warnings = extraFactWarnings;
 
   config.assertions =

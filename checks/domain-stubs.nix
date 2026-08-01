@@ -4,12 +4,12 @@
 #
 # Every level-1 resource in `modules/nixhost.nix` is a `readOnly` mirror whose default is a
 # defensive read of the repository that owns the fact -- `nixcpu`, `nixram`, `nixgpu`, `nixnet`,
-# `nixstorage`. Testing those mirrors needs those option paths to EXIST during a check, and this
-# repo deliberately cannot get them the obvious way: nixhost takes no flake input on any of the five
-# (see the module's own header), because the whole point of a defensive read is that the dependency
-# only ever points this way, weakly, and a domain repo stays usable by someone who has never heard
-# of nixhost. Adding five checks-only inputs would put five flake inputs on a repo whose central
-# claim is that it needs none, and would tie this repo's CI to five other repos' revisions.
+# `nixstorage`, `nixaudio`. Testing those mirrors needs those option paths to EXIST during a check,
+# and this repo deliberately cannot get them the obvious way: nixhost takes no flake input on any of
+# the six (see the module's own header), because the whole point of a defensive read is that the
+# dependency only ever points this way, weakly, and a domain repo stays usable by someone who has
+# never heard of nixhost. Adding six checks-only inputs would put six flake inputs on a repo whose
+# central claim is that it needs none, and would tie this repo's CI to six other repos' revisions.
 #
 # So the checks supply the surface themselves. What this file has to be faithful about is not the
 # domains' BEHAVIOUR -- none of their assertions, generators or units are here, and none are
@@ -90,12 +90,22 @@
       description = "Stub of nixnet.interfaces.";
     };
 
-    # nixstorage -- modules/disks.nix. The oldest of the five mirrors, and until now the only one
-    # this repo's checks could not exercise against a populated table at all (experiments/ 003).
+    # nixstorage -- modules/disks.nix. The oldest of the five original mirrors, and until now the
+    # only one this repo's checks could not exercise against a populated table at all
+    # (experiments/ 003).
     nixstorage.disks = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
       default = { };
       description = "Stub of nixstorage.disks.";
+    };
+
+    # nixaudio -- fabric module (sink catalogue). Upstream entries carry
+    # origin/peer/device/description/known; nixhost mirrors the table opaquely (see
+    # `resources.audio`'s own description for why), so the stub is opaque too, matching nixgpu's.
+    nixaudio.fabric.catalogue = lib.mkOption {
+      type = lib.types.attrsOf lib.types.anything;
+      default = { };
+      description = "Stub of nixaudio.fabric.catalogue.";
     };
   };
 }
