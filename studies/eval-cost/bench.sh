@@ -93,7 +93,7 @@ echo "== correctness check: cross-host-assert fires in BOTH directions (not time
   echo "-- plain data, n=100, no collide -> expect ok=true --"
   nix eval --impure --json --expr \
     '(import ./lib/cross-host-assert.nix { hosts = import ./lib/gen-plain-hosts.nix { n = 100; }; }).ok'
-  echo "-- plain data, n=100, collide=ip -> expect ok=false, ipDuplicates=[\"192.168.42.1\"] --"
+  echo "-- plain data, n=100, collide=ip -> expect ok=false, ipDuplicates=[\"198.51.100.1\"] --"
   nix eval --impure --json --expr \
     '(import ./lib/cross-host-assert.nix { hosts = import ./lib/gen-plain-hosts.nix { n = 100; collide = "ip"; }; })'
   echo "-- plain data, n=100, collide=disk -> expect ok=false, diskDuplicates=[\"ata-DISK-host0-0\"] --"
