@@ -31,7 +31,7 @@
   imports = [
     ./env-desktop.nix
     ./env-cluster.nix
-    ./env-devhome.nix
+    ./env-native.nix
   ];
 
   # ── Level 1, stated at each fact's owner. nixhost mirrors all of it, read-only. ────────────

@@ -144,8 +144,8 @@ let
   # see `resources.audio`'s own description for why).
   oneAudioSink = {
     nixaudio.fabric.catalogue.headset0 = {
-      origin = "elitebook";
-      peer = "elitebook";
+      origin = "laptop1";
+      peer = "laptop1";
       device = "alsa_output.usb-headset";
       description = "USB headset";
       known = true;
@@ -283,7 +283,7 @@ let
   # A native tenant beside a k3s node, together fitting the host. Must build.
   nativeBesideCluster = hostWith [ cpu16c32t ram64g ] {
     environments = {
-      devhome = { kind = "native"; resources.ram.limitMiB = 8192; };
+      native = { kind = "native"; resources.ram.limitMiB = 8192; };
       cluster = { kind = "k3s"; resources.ram.limitMiB = 32768; };
     };
   };
@@ -293,7 +293,7 @@ let
   # label but skipped it in the fold would pass this.
   nativeCountsInTheSum = hostWith [ cpu16c32t ram64g ] {
     environments = {
-      devhome = { kind = "native"; resources.ram.limitMiB = 40960; };
+      native = { kind = "native"; resources.ram.limitMiB = 40960; };
       cluster = { kind = "k3s"; resources.ram.limitMiB = 32768; };
     };
   };
@@ -302,7 +302,7 @@ let
   # claims the card exclusively while a cluster node also wants it.
   nativeGpuConflict = hostWith [ cpu16c32t ram64g oneAmdCard ] {
     environments = {
-      devhome = { kind = "native"; resources.gpu.gpu0.access = "exclusive"; };
+      native = { kind = "native"; resources.gpu.gpu0.access = "exclusive"; };
       cluster = { kind = "k3s"; resources.gpu.gpu0.access = "shared"; };
     };
   };
@@ -493,8 +493,8 @@ let
     };
     nixstorage.disks.pool0 = { device = "/dev/disk/by-id/ata-EXAMPLE_A"; };
     nixaudio.fabric.catalogue.headset0 = {
-      origin = "elitebook";
-      peer = "elitebook";
+      origin = "laptop1";
+      peer = "laptop1";
       device = "alsa_output.usb-headset";
       description = "USB headset";
       known = true;
@@ -517,7 +517,7 @@ let
   };
   netSetDirectly = hostWith baseFacts { resources.net.lan0 = { mac = "aa:bb:cc:dd:ee:ff"; }; };
   audioSetDirectly = hostWith baseFacts {
-    resources.audio.headset0 = { origin = "elitebook"; peer = "elitebook"; device = "alsa_output.usb-headset"; description = "USB headset"; known = true; };
+    resources.audio.headset0 = { origin = "laptop1"; peer = "laptop1"; device = "alsa_output.usb-headset"; description = "USB headset"; known = true; };
   };
 
   # ── Ceiling fixtures: MIRROR + ASSERT-RESOLVED ────────────────────────────────────────────────
@@ -810,8 +810,8 @@ let
     (check "mirror/audio-catalogue-mirrors-nixaudio"
       (mirrored.audio == {
         headset0 = {
-          origin = "elitebook";
-          peer = "elitebook";
+          origin = "laptop1";
+          peer = "laptop1";
           device = "alsa_output.usb-headset";
           description = "USB headset";
           known = true;

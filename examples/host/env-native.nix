@@ -10,7 +10,7 @@
 # beneath it stays empty, because a process on the metal has nothing inside it.
 { ... }:
 {
-  nixhost.environments.devhome = {
+  nixhost.environments.native-session = {
     kind = "native";
 
     resources = {
